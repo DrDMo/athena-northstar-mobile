@@ -40,6 +40,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Brand, Radius, Spacing } from '@/constants/theme';
 import { type CaptureMeta, newCaptureId } from '@/lib/capture';
+import { enqueue } from '@/lib/queue';
+import { syncNow } from '@/lib/sync';
 
 type Facing = 'back' | 'front';
 
@@ -89,6 +91,12 @@ export default function PhotoCaptureScreen() {
       }
 
       setCaptures((prev) => [meta, ...prev]);
+
+      // Persist to the queue + kick a sync attempt in the background.
+      // Fire-and-forget; syncNow is idempotent and offline-tolerant.
+      enqueue(meta).then(() => {
+        void syncNow();
+      });
     } catch (e) {
       Alert.alert('Capture failed', (e as Error).message);
     } finally {
@@ -101,19 +109,8 @@ export default function PhotoCaptureScreen() {
   }, []);
 
   const close = useCallback(() => {
-    if (captures.length > 0) {
-      Alert.alert(
-        'Discard captures?',
-        `You have ${captures.length} unsaved capture${captures.length === 1 ? '' : 's'}. Leaving this screen drops them — workfile sync lands in the next milestone.`,
-        [
-          { text: 'Stay', style: 'cancel' },
-          { text: 'Discard', style: 'destructive', onPress: () => router.back() },
-        ],
-      );
-    } else {
-      router.back();
-    }
-  }, [captures.length, router]);
+    router.back();
+  }, [router]);
 
   // Permission-gate: ask once, then either show preview or the deny-state UI.
   if (!permission) {
