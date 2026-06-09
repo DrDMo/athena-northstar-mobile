@@ -22,6 +22,13 @@ import { useEffect, useState } from 'react';
 import { useColorScheme } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
+import {
+  PlayfairDisplay_400Regular,
+  PlayfairDisplay_500Medium,
+  PlayfairDisplay_600SemiBold,
+  PlayfairDisplay_700Bold,
+  useFonts,
+} from '@expo-google-fonts/playfair-display';
 
 import { fetchMe, type AuthMe } from '@/lib/api';
 import { startAutoSyncOnReconnect, syncNow } from '@/lib/sync';
@@ -35,6 +42,16 @@ export default function RootLayout() {
   const segments = useSegments();
   const [ready, setReady] = useState(false);
   const [me, setMe] = useState<AuthMe | null>(null);
+
+  // Load Playfair Display once at the root. Splash stays up until both
+  // fonts AND auth have resolved; otherwise the wordmark would
+  // re-render at first paint (visible "font swap" flash).
+  const [fontsLoaded] = useFonts({
+    PlayfairDisplay_400Regular,
+    PlayfairDisplay_500Medium,
+    PlayfairDisplay_600SemiBold,
+    PlayfairDisplay_700Bold,
+  });
 
   // First-mount auth check. We deliberately swallow errors here —
   // a transient network failure on cold start shouldn't lock the
@@ -84,7 +101,7 @@ export default function RootLayout() {
     }
   }, [ready, me, segments, router]);
 
-  if (!ready) return null;
+  if (!ready || !fontsLoaded) return null;
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
