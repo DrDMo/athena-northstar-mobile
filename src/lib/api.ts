@@ -138,3 +138,69 @@ export async function createAssignment(input: {
   if (!res.ok) throw new Error(`createAssignment failed (${res.status})`);
   return (await res.json()) as AssignmentSummary;
 }
+
+// ---------------------------------------------------------------------------
+// Captures inbox (m6)
+//
+// The server-side inbox lists captures that have arrived but haven't been
+// linked to a case yet. The local AsyncStorage queue tracks in-flight
+// uploads; this list shows what the server has actually persisted.
+// ---------------------------------------------------------------------------
+
+export type CaptureSummary = {
+  id: string;
+  kind: 'photo' | 'voice_note' | 'text_note' | 'sketch';
+  client_id?: string;
+  original_filename: string;
+  content_type: string;
+  size_bytes: number;
+  sha256_hex: string;
+  captured_at: string;
+  uploaded_at: string;
+  case_id?: string;
+  workfile_id?: string;
+  geo?: { lat?: number; lon?: number; accuracyMeters?: number };
+  caption?: string;
+};
+
+export async function listCaptureInbox(): Promise<CaptureSummary[]> {
+  const res = await apiFetch('/v1/captures');
+  if (!res.ok) throw new Error(`listCaptureInbox failed (${res.status})`);
+  const body = (await res.json()) as { captures: CaptureSummary[] };
+  return body.captures;
+}
+
+export async function linkCapture(
+  id: string,
+  input: { case_id?: string; workfile_id?: string },
+): Promise<CaptureSummary> {
+  const res = await apiFetch(`/v1/captures/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`linkCapture failed (${res.status})`);
+  return (await res.json()) as CaptureSummary;
+}
+
+export async function deleteCapture(id: string): Promise<void> {
+  const res = await apiFetch(`/v1/captures/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`deleteCapture failed (${res.status})`);
+  }
+}
+
+export async function getCaptureDownloadUrl(id: string): Promise<{
+  url: string;
+  expires_at: string;
+  content_type: string;
+}> {
+  const res = await apiFetch(`/v1/captures/${encodeURIComponent(id)}/download`);
+  if (!res.ok) throw new Error(`getCaptureDownloadUrl failed (${res.status})`);
+  return (await res.json()) as {
+    url: string;
+    expires_at: string;
+    content_type: string;
+  };
+}

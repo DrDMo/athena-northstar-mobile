@@ -22,6 +22,7 @@ import {
   useAudioRecorder,
   useAudioRecorderState,
 } from 'expo-audio';
+import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
@@ -76,6 +77,7 @@ export default function VoiceCaptureScreen() {
   const startRecording = useCallback(async () => {
     if (recorderState.isRecording || busy) return;
     setBusy(true);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
       await recorder.prepareToRecordAsync();
       recorder.record();
@@ -117,6 +119,7 @@ export default function VoiceCaptureScreen() {
 
       await enqueue(meta);
       setSavedCount((n) => n + 1);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       void syncNow();
     } catch (e) {
       Alert.alert('Save failed', (e as Error).message);
