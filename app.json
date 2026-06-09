@@ -1,16 +1,16 @@
 {
   "expo": {
-    "name": "North Star Appraiser",
-    "slug": "northstar-appraiser",
+    "name": "North Star Appraisal",
+    "slug": "northstar-appraisal",
     "owner": "athena-systems",
     "version": "0.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "northstarappraiser",
+    "scheme": "northstarappraisal",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.athenadecisionsystems.northstar.appraiser",
+      "bundleIdentifier": "com.athenadecisionsystems.northstar.appraisal",
       "infoPlist": {
         "NSCameraUsageDescription": "North Star uses the camera to capture property photos during on-site inspections. Photos stay on your device until you upload them to a workfile.",
         "NSMicrophoneUsageDescription": "North Star uses the microphone to record voice notes during on-site inspections.",
@@ -21,7 +21,7 @@
       }
     },
     "android": {
-      "package": "com.athenadecisionsystems.northstar.appraiser",
+      "package": "com.athenadecisionsystems.northstar.appraisal",
       "adaptiveIcon": {
         "backgroundColor": "#0f1d3a",
         "foregroundImage": "./assets/images/android-icon-foreground.png",

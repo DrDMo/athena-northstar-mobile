@@ -58,7 +58,7 @@ export default function LoginScreen() {
         <View style={styles.brandBlock}>
           <Text style={styles.eyebrow}>ATHENA SYSTEMS</Text>
           <Text style={styles.wordmark}>North Star</Text>
-          <Text style={styles.descriptor}>Appraiser · Field</Text>
+          <Text style={styles.descriptor}>Appraisal · Field</Text>
           <View style={styles.goldRule} />
           <Text style={styles.tagline}>Trusted Decision Infrastructure</Text>
         </View>
