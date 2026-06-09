@@ -4,8 +4,6 @@
     "appVersionSource": "remote"
   },
   "build": {
-    "//": "Three profiles. development is for connecting to a local Metro server with dev tools; preview is the 'install on a colleague's phone' profile (signed APK / internal-distribution IPA, no Play Store / TestFlight gate); production is the App Store + Play Store profile.",
-
     "development": {
       "developmentClient": true,
       "distribution": "internal",
@@ -21,12 +19,10 @@
       "distribution": "internal",
       "channel": "preview",
       "android": {
-        "buildType": "apk",
-        "//": "APK over AAB so a tester can sideload via direct download (testers won't have Internal App Sharing access yet)."
+        "buildType": "apk"
       },
       "ios": {
-        "simulator": false,
-        "//": "Ad-hoc / enterprise signing; requires a paid Apple Developer account and the tester's UDID registered."
+        "simulator": false
       },
       "env": {
         "EXPO_PUBLIC_BUILD_PROFILE": "preview"
@@ -46,7 +42,6 @@
   },
   "submit": {
     "production": {
-      "//": "Populate Google Play + Apple credentials before first submit.",
       "android": {
         "track": "internal",
         "releaseStatus": "draft"
