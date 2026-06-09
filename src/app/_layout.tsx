@@ -24,6 +24,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 
 import { fetchMe, type AuthMe } from '@/lib/api';
+import { startAutoSyncOnReconnect, syncNow } from '@/lib/sync';
 import { Brand } from '@/constants/theme';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -58,6 +59,17 @@ export default function RootLayout() {
       cancelled = true;
     };
   }, []);
+
+  // After auth resolves, register a network listener that auto-syncs
+  // the capture queue whenever the device transitions offline → online.
+  // Also kicks one sync attempt on mount in case captures are queued
+  // from a previous session.
+  useEffect(() => {
+    if (!ready || !me) return;
+    void syncNow();
+    const unsubscribe = startAutoSyncOnReconnect();
+    return unsubscribe;
+  }, [ready, me]);
 
   // Once we know who the user is, redirect appropriately. We use
   // `segments[0]` to decide whether the current route is in the
