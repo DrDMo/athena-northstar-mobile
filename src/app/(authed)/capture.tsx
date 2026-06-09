@@ -15,22 +15,31 @@
  * hand. Big tap targets, voice-first where possible.
  */
 
+import { useRouter } from 'expo-router';
 import { StyleSheet, Text, View, Pressable, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Brand, Radius, Spacing } from '@/constants/theme';
 
-const TILES: { key: string; title: string; sub: string; disabled?: boolean }[] =
-  [
-    { key: 'photo', title: 'Photo', sub: 'with EXIF + GPS', disabled: true },
-    { key: 'voice', title: 'Voice note', sub: '.m4a recording', disabled: true },
-    { key: 'sketch', title: 'Sketch', sub: 'finger or stylus', disabled: true },
-    { key: 'address', title: 'Address', sub: 'lookup + reverse geocode', disabled: true },
-    { key: 'mls', title: 'MLS scan', sub: 'barcode → comp', disabled: true },
-    { key: 'note', title: 'Text note', sub: 'tag to a workfile', disabled: true },
-  ];
+type Tile = {
+  key: string;
+  title: string;
+  sub: string;
+  href?: '/photo-capture';
+  disabled?: boolean;
+};
+
+const TILES: Tile[] = [
+  { key: 'photo', title: 'Photo', sub: 'with EXIF + GPS', href: '/photo-capture' },
+  { key: 'voice', title: 'Voice note', sub: '.m4a recording', disabled: true },
+  { key: 'sketch', title: 'Sketch', sub: 'finger or stylus', disabled: true },
+  { key: 'address', title: 'Address', sub: 'lookup + reverse geocode', disabled: true },
+  { key: 'mls', title: 'MLS scan', sub: 'barcode → comp', disabled: true },
+  { key: 'note', title: 'Text note', sub: 'tag to a workfile', disabled: true },
+];
 
 export default function CaptureScreen() {
+  const router = useRouter();
   return (
     <SafeAreaView style={styles.flex}>
       <ScrollView contentContainerStyle={styles.scroll}>
@@ -53,6 +62,9 @@ export default function CaptureScreen() {
                 pressed && !t.disabled && styles.tilePressed,
               ]}
               disabled={t.disabled}
+              onPress={() => {
+                if (t.href) router.push(t.href);
+              }}
             >
               <Text style={styles.tileTitle}>{t.title}</Text>
               <Text style={styles.tileSub}>{t.sub}</Text>
@@ -62,10 +74,10 @@ export default function CaptureScreen() {
         </View>
 
         <Text style={styles.fine}>
-          v0.1 ships these as placeholders; the native capture flows
-          land in subsequent milestones. Existing photos + notes
-          already taken on your phone can be uploaded via the web
-          app at appraisal.athenanorthstar.com in the meantime.
+          Photo capture is live. Voice, sketch, address and MLS-scan
+          flows ship in subsequent milestones. Captures stay on this
+          device until sync-to-workfile (m4) — for now they queue in
+          the photo screen and clear when you leave it.
         </Text>
       </ScrollView>
     </SafeAreaView>
