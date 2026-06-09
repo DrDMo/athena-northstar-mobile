@@ -1,5 +1,5 @@
 /**
- * North Star Appraiser — brand theme.
+ * North Star Appraisal — brand theme.
  *
  * Mirrors the cream + navy + warm-gold palette used across the
  * marketing site (athenadecisionsystems.com) and the web app
