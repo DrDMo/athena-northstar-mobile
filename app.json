@@ -15,6 +15,7 @@
         "NSMicrophoneUsageDescription": "North Star uses the microphone to record voice notes during on-site inspections.",
         "NSLocationWhenInUseUsageDescription": "North Star uses your location to geotag inspection photos so the audit chain can witness where each photo was taken.",
         "NSPhotoLibraryUsageDescription": "North Star imports photos from your library for inclusion in a workfile.",
+        "NSPhotoLibraryAddUsageDescription": "North Star can save captured inspection photos to your Photos library so you have a local copy with the GPS + timestamp metadata embedded.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -30,7 +31,10 @@
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
     },
     "web": {
@@ -40,6 +44,27 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "North Star uses the camera to capture property photos during on-site inspections. Photos stay on your device until you upload them to a workfile.",
+          "microphonePermission": "North Star uses the microphone to record voice notes during on-site inspections.",
+          "recordAudioAndroid": true
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "North Star uses your location to geotag inspection photos so the audit chain can witness where each photo was taken."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "North Star imports photos from your library for inclusion in a workfile."
+        }
+      ],
+      "expo-media-library",
       [
         "expo-splash-screen",
         {

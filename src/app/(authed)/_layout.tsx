@@ -51,6 +51,21 @@ export default function AuthedLayout() {
           tabBarLabel: 'Settings',
         }}
       />
+      {/* Hidden from the tab bar — routed to from Capture tiles. */}
+      <Tabs.Screen
+        name="photo-capture"
+        options={{
+          href: null,
+          headerShown: false,
+        }}
+      />
+      <Tabs.Screen
+        name="assignments/[id]"
+        options={{
+          href: null,
+          title: 'Assignment',
+        }}
+      />
     </Tabs>
   );
 }
