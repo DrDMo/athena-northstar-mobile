@@ -25,13 +25,13 @@ type Tile = {
   key: string;
   title: string;
   sub: string;
-  href?: '/photo-capture';
+  href?: '/photo-capture' | '/voice-capture';
   disabled?: boolean;
 };
 
 const TILES: Tile[] = [
   { key: 'photo', title: 'Photo', sub: 'with EXIF + GPS', href: '/photo-capture' },
-  { key: 'voice', title: 'Voice note', sub: '.m4a recording', disabled: true },
+  { key: 'voice', title: 'Voice note', sub: '.m4a recording', href: '/voice-capture' },
   { key: 'sketch', title: 'Sketch', sub: 'finger or stylus', disabled: true },
   { key: 'address', title: 'Address', sub: 'lookup + reverse geocode', disabled: true },
   { key: 'mls', title: 'MLS scan', sub: 'barcode → comp', disabled: true },

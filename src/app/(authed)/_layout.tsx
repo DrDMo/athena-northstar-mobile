@@ -60,6 +60,13 @@ export default function AuthedLayout() {
         }}
       />
       <Tabs.Screen
+        name="voice-capture"
+        options={{
+          href: null,
+          headerShown: false,
+        }}
+      />
+      <Tabs.Screen
         name="assignments/[id]"
         options={{
           href: null,
