@@ -14,11 +14,11 @@ This walks you (Darin) through getting a real APK / IPA you can install on a pho
    cd "c:/Users/darin/Documents/_Athena Decision System/athena-northstar-mobile"
    eas login
    ```
-4. **Initialize the EAS project** (first time only — links the local repo to a remote project id):
+4. **Initialize the EAS project** (first time only — creates the project under `athena-systems` and writes the project id into `app.json` → `expo.extra.eas.projectId`):
    ```bash
-   eas init --non-interactive
+   eas init --non-interactive --force
    ```
-   This writes the project id into `app.json` → `expo.extra.eas.projectId`. Commit that change.
+   `--force` is required on the very first run because the project doesn't exist yet on Expo's side; the flag tells `eas init` to create it instead of looking for an existing one. After this completes you should see `@athena-systems/northstar-appraiser` in <https://expo.dev>. Commit the updated `app.json`.
 
 ## Android — fastest path
 
