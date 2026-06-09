@@ -35,7 +35,11 @@
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.WRITE_EXTERNAL_STORAGE"
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO"
       ]
     },
     "web": {
@@ -85,7 +89,10 @@
     },
     "extra": {
       "router": {},
-      "apiBase": "https://appraisal.athenanorthstar.com"
+      "apiBase": "https://appraisal.athenanorthstar.com",
+      "eas": {
+        "projectId": "8edde3a9-c83f-4f7d-b71c-56d594514d30"
+      }
     }
   }
 }
