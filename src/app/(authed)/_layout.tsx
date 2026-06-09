@@ -45,6 +45,13 @@ export default function AuthedLayout() {
         }}
       />
       <Tabs.Screen
+        name="inbox"
+        options={{
+          title: 'Inbox',
+          tabBarLabel: 'Inbox',
+        }}
+      />
+      <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',

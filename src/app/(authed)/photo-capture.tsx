@@ -21,6 +21,7 @@
  */
 
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
@@ -57,6 +58,9 @@ export default function PhotoCaptureScreen() {
   const onShutter = useCallback(async () => {
     if (!cameraRef.current || busy) return;
     setBusy(true);
+    // Fire haptic at the SHUTTER moment, not after the round-trip,
+    // so the feedback aligns with the user's tap.
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     try {
       const photo = await cameraRef.current.takePictureAsync({
         // EXIF must be preserved for the audit chain — the server
@@ -91,6 +95,9 @@ export default function PhotoCaptureScreen() {
       }
 
       setCaptures((prev) => [meta, ...prev]);
+
+      // Soft success tick after the photo lands.
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       // Persist to the queue + kick a sync attempt in the background.
       // Fire-and-forget; syncNow is idempotent and offline-tolerant.
