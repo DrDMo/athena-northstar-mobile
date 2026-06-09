@@ -204,3 +204,83 @@ export async function getCaptureDownloadUrl(id: string): Promise<{
     content_type: string;
   };
 }
+
+// ---------------------------------------------------------------------------
+// Rule catalogs (m7) — appraiser's in-field reference
+// ---------------------------------------------------------------------------
+
+export type RuleCatalogSummary = {
+  id: string;
+  version: string;
+  published_at: string;
+  published_by: string;
+  rule_count: number;
+};
+
+export type RuleCitation = {
+  source?: string;
+  section?: string;
+  subsection?: string;
+  url?: string;
+  effective_from?: string;
+};
+
+export type RuleEntry = {
+  id: string;
+  name?: string;
+  jurisdiction?: string;
+  severity?: string;
+  citation?: RuleCitation;
+  message?: { on_pass?: string; on_fail?: string };
+};
+
+export async function listRuleCatalogs(): Promise<RuleCatalogSummary[]> {
+  const res = await apiFetch('/v1/rule-catalogs');
+  if (!res.ok) throw new Error(`listRuleCatalogs failed (${res.status})`);
+  const body = (await res.json()) as { catalogs: RuleCatalogSummary[] };
+  return body.catalogs;
+}
+
+export async function getRuleCatalog(id: string): Promise<{
+  summary: RuleCatalogSummary;
+  manifest: unknown;
+  rules: RuleEntry[];
+}> {
+  const res = await apiFetch(`/v1/rule-catalogs/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`getRuleCatalog failed (${res.status})`);
+  const body = (await res.json()) as RuleCatalogSummary & {
+    manifest: unknown;
+  };
+  const rules = extractRules(body.manifest);
+  return {
+    summary: {
+      id: body.id,
+      version: body.version,
+      published_at: body.published_at,
+      published_by: body.published_by,
+      rule_count: body.rule_count,
+    },
+    manifest: body.manifest,
+    rules,
+  };
+}
+
+// Manifest shape varies a bit by milestone — newer publishes nest
+// under `rules`, older ones under `rule_set.rules`. Try both rather
+// than fail loudly on a shape we don't recognize.
+function extractRules(manifest: unknown): RuleEntry[] {
+  if (!manifest || typeof manifest !== 'object') return [];
+  const m = manifest as Record<string, unknown>;
+  const tryArray = (v: unknown): RuleEntry[] | null => {
+    if (!Array.isArray(v)) return null;
+    return v.filter(
+      (e): e is RuleEntry =>
+        !!e && typeof e === 'object' && typeof (e as RuleEntry).id === 'string',
+    );
+  };
+  return (
+    tryArray(m.rules) ??
+    tryArray((m.rule_set as Record<string, unknown> | undefined)?.rules) ??
+    []
+  );
+}

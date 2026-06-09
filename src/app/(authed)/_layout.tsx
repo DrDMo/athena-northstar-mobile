@@ -52,6 +52,13 @@ export default function AuthedLayout() {
         }}
       />
       <Tabs.Screen
+        name="reference"
+        options={{
+          title: 'Reference',
+          tabBarLabel: 'Reference',
+        }}
+      />
+      <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
