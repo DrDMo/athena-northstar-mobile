@@ -1,56 +1,136 @@
-# Welcome to your Expo app 👋
+# North Star ^Appraiser — Mobile
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+The field companion to **Athena Systems North Star ^Appraiser**. Lets an
+appraiser work an assignment from the property itself — pull up the
+workfile, capture photos with GPS + timestamp baked in, dictate notes,
+sketch sites, and sync everything back into the sealed audit chain
+served by the web app.
 
-## Get started
+The mobile app is one of three coordinated surfaces:
 
-1. Install dependencies
+| Surface       | Where it lives                                |
+|---------------|-----------------------------------------------|
+| Marketing     | <https://athenadecisionsystems.com>           |
+| Product (web) | <https://appraisal.athenanorthstar.com>       |
+| Product (iOS) | TestFlight, then App Store                    |
 
-   ```bash
-   npm install
-   ```
+It talks to the same backend the web app does — no separate mobile API.
 
-2. Start the app
+## Stack
 
-   ```bash
-   npx expo start
-   ```
+- [Expo SDK 56](https://docs.expo.dev/) + [React Native 0.85](https://reactnative.dev/)
+- [Expo Router](https://docs.expo.dev/router/introduction) for file-based routing
+- [`expo-secure-store`](https://docs.expo.dev/versions/latest/sdk/securestore/) for session-token persistence (iOS Keychain / Android Keystore)
+- TypeScript strict mode
 
-In the output, you'll find options to open the app in a
+Auth is cookie-based, matching the web app: log in once via
+`POST /v1/auth/sessions`, capture the `Set-Cookie: session=…` value,
+and attach it to every subsequent request as a `Cookie:` header.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## Layout
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```
+src/
+  app/                            # expo-router file-based routes
+    _layout.tsx                   # root layout + auth gate
+    login.tsx                     # /login
+    (authed)/
+      _layout.tsx                 # tabs: Assignments | Capture | Settings
+      index.tsx                   # /  (assignments list)
+      capture.tsx                 # /capture (quick actions grid)
+      settings.tsx                # /settings (account + sign out)
+      assignments/
+        [id].tsx                  # /assignments/:id
+  components/                     # cross-screen shared bits (kept thin)
+  constants/
+    theme.ts                      # brand palette, spacing, radius, fonts
+  hooks/                          # custom react hooks
+  lib/
+    api.ts                        # backend client (login, fetchMe, listAssignments, …)
+    session.ts                    # SecureStore wrapper
+assets/                           # icons, splash, fonts
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+The `(authed)` group keeps any route requiring a session inside one
+folder so the root `_layout.tsx` can gate everything in a single
+place: if `fetchMe()` returns `null`, redirect to `/login`.
 
-### Other setup steps
+## Brand
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+Same cream + navy + warm-gold palette as the marketing site and web
+app. Colour and spacing tokens live in `src/constants/theme.ts` —
+edit there, never inline.
 
-## Learn more
+The wordmark renders as:
 
-To learn more about developing your project with Expo, look at the following resources:
+```
+ATHENA SYSTEMS         (eyebrow, gold, uppercase, tracked)
+North Star             (Playfair Display serif, navy)
+Appraiser · Field      (gold descriptor)
+```
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+## Local dev
 
-## Join the community
+```bash
+npm install
+npm run ios           # iOS simulator (requires macOS + Xcode)
+npm run android       # Android emulator
+npm run web           # quick browser preview (limited; native APIs absent)
+```
 
-Join our community of developers creating universal apps.
+By default the app talks to **`https://appraisal.athenanorthstar.com`**.
+To point at a local backend during development, edit `app.json` and
+set `expo.extra.apiBase` to your dev API URL:
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+```jsonc
+"extra": {
+  "apiBase": "http://localhost:8080"
+}
+```
+
+Cookies on `http://localhost` need `SameSite=Lax` and no `Secure`
+flag; the decision-server emits those when running in dev mode.
+
+## API surface used so far
+
+| Endpoint                         | Used by                          |
+|----------------------------------|----------------------------------|
+| `POST /v1/auth/sessions`         | `login()` — `src/lib/api.ts`     |
+| `DELETE /v1/auth/sessions`       | `logout()`                       |
+| `GET /v1/auth/me`                | `fetchMe()` (root auth gate)     |
+| `GET /v1/cases`                  | `listAssignments()`              |
+| `GET /v1/cases/:id`              | `getAssignment()`                |
+| `POST /v1/cases`                 | `createAssignment()` (not wired) |
+
+All endpoint shapes are kept grep-compatible with the web app's
+`web/src/lib/api.ts` so future refactors hit both surfaces.
+
+## Roadmap
+
+| Milestone | Scope                                                                 | Status   |
+|-----------|-----------------------------------------------------------------------|----------|
+| m0        | Scaffold: Expo SDK 56, bundle ID, theme tokens                         | done     |
+| m1        | Login screen + cookie-session client                                   | done     |
+| m2        | Authed tab group: Assignments / Capture / Settings                     | done     |
+| m3        | Native photo capture (EXIF + GPS preserved)                            | next     |
+| m4        | Voice note capture (`.m4a`, transcribed server-side)                   | next     |
+| m5        | Sketch capture (gesture canvas → SVG → workfile attachment)            | later    |
+| m6        | Offline queue + sync (work in dead-zone properties without signal)     | later    |
+| m7        | MLS barcode scan                                                       | later    |
+| m8        | Apple Pencil + iPad layout                                             | later    |
+
+The "later" items wait until we have field-testing signal from real
+appraisers using m0–m4 so we don't gold-plate things that don't
+matter to the workflow.
+
+## Conventions
+
+Mirrors the parent monorepo:
+
+- Branches: `m<NN>-<slug>` off `main`
+- Commits: signed; protected `main`
+- CI gates: `tsc --noEmit` + `expo lint` (will be added once
+  pushed to GitHub)
+- No time estimates in roadmap / planning docs
+- Real photos used for testing must have PII (faces, plates,
+  street numbers) blurred before they land in the repo

@@ -1,26 +1,64 @@
 /**
- * Below are the colors that are used in the app. The colors are defined in the light and dark mode.
- * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
+ * North Star Appraiser — brand theme.
+ *
+ * Mirrors the cream + navy + warm-gold palette used across the
+ * marketing site (athenadecisionsystems.com) and the web app
+ * (appraisal.athenanorthstar.com) so the mobile surface feels
+ * like one product.
  */
-
-import '@/global.css';
 
 import { Platform } from 'react-native';
 
+export const Brand = {
+  // Backgrounds
+  cream: '#f3ecdb',
+  surface: '#fffaef',
+  paperWarm: '#f7f0dc',
+
+  // Ink (text)
+  ink: '#1a1a1a',
+  inkMuted: '#4a5568',
+  inkFaint: '#8b97a8',
+
+  // Brand mark
+  navyDeep: '#0f1d3a',
+  navySoft: '#163659',
+  gold: '#b58c3a',
+  goldSoft: '#c9a05a',
+
+  // Structural
+  border: '#e3dfd2',
+  rule: '#cbc4ad',
+
+  // Semantic
+  green: '#1f6b3a',
+  red: '#8a1f1f',
+  amber: '#8a5a00',
+} as const;
+
 export const Colors = {
   light: {
-    text: '#000000',
-    background: '#ffffff',
-    backgroundElement: '#F0F0F3',
-    backgroundSelected: '#E0E1E6',
-    textSecondary: '#60646C',
+    text: Brand.ink,
+    background: Brand.cream,
+    backgroundElement: Brand.surface,
+    backgroundSelected: Brand.paperWarm,
+    textSecondary: Brand.inkMuted,
+    accent: Brand.gold,
+    accentText: Brand.navyDeep,
+    border: Brand.border,
   },
   dark: {
-    text: '#ffffff',
-    background: '#000000',
-    backgroundElement: '#212225',
-    backgroundSelected: '#2E3135',
-    textSecondary: '#B0B4BA',
+    // Dark mode uses inverse navy as background; gold stays the
+    // accent so the brand feel survives. Keeping cream + navy
+    // recognizable across modes.
+    text: '#f3ecdb',
+    background: '#0a1426',
+    backgroundElement: '#163659',
+    backgroundSelected: '#1f4c7a',
+    textSecondary: '#b8c1d0',
+    accent: Brand.gold,
+    accentText: Brand.cream,
+    border: '#2a3f5f',
   },
 } as const;
 
@@ -28,13 +66,9 @@ export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
 
 export const Fonts = Platform.select({
   ios: {
-    /** iOS `UIFontDescriptorSystemDesignDefault` */
     sans: 'system-ui',
-    /** iOS `UIFontDescriptorSystemDesignSerif` */
     serif: 'ui-serif',
-    /** iOS `UIFontDescriptorSystemDesignRounded` */
     rounded: 'ui-rounded',
-    /** iOS `UIFontDescriptorSystemDesignMonospaced` */
     mono: 'ui-monospace',
   },
   default: {
@@ -63,3 +97,10 @@ export const Spacing = {
 
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;
 export const MaxContentWidth = 800;
+
+export const Radius = {
+  sm: 4,
+  md: 8,
+  lg: 14,
+  pill: 999,
+} as const;
