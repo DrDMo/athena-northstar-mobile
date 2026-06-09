@@ -13,7 +13,7 @@
  */
 
 import { Tabs } from 'expo-router';
-import { Brand } from '@/constants/theme';
+import { Brand, Fonts } from '@/constants/theme';
 
 export default function AuthedLayout() {
   return (
@@ -27,7 +27,10 @@ export default function AuthedLayout() {
         },
         headerStyle: { backgroundColor: Brand.cream },
         headerTintColor: Brand.navyDeep,
-        headerTitleStyle: { fontWeight: '600' },
+        headerTitleStyle: {
+          fontFamily: Fonts?.serif,
+          fontSize: 22,
+        },
       }}
     >
       <Tabs.Screen

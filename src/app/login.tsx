@@ -18,7 +18,7 @@ import {
   View,
 } from 'react-native';
 
-import { Brand, Radius, Spacing } from '@/constants/theme';
+import { Brand, Fonts, Radius, Spacing } from '@/constants/theme';
 import { login } from '@/lib/api';
 
 export default function LoginScreen() {
@@ -133,17 +133,16 @@ const styles = StyleSheet.create({
     color: Brand.inkMuted,
   },
   wordmark: {
-    fontSize: 44,
-    fontWeight: '700',
+    fontSize: 48,
     color: Brand.navyDeep,
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontFamily: Fonts?.serif,
     marginTop: Spacing.two,
+    letterSpacing: -0.5,
   },
   descriptor: {
     fontSize: 18,
-    fontWeight: '700',
     color: Brand.gold,
-    fontFamily: Platform.OS === 'ios' ? 'Georgia' : 'serif',
+    fontFamily: Fonts?.serif,
     letterSpacing: 0.5,
     marginTop: 2,
   },

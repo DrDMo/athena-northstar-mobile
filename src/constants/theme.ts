@@ -67,19 +67,25 @@ export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
 export const Fonts = Platform.select({
   ios: {
     sans: 'system-ui',
-    serif: 'ui-serif',
+    // Playfair Display, loaded at the root via @expo-google-fonts.
+    // Matches the marketing site's serif headings so the brand voice
+    // carries across surfaces.
+    serif: 'PlayfairDisplay_700Bold',
+    serifBook: 'PlayfairDisplay_400Regular',
     rounded: 'ui-rounded',
     mono: 'ui-monospace',
   },
   default: {
     sans: 'normal',
-    serif: 'serif',
+    serif: 'PlayfairDisplay_700Bold',
+    serifBook: 'PlayfairDisplay_400Regular',
     rounded: 'normal',
     mono: 'monospace',
   },
   web: {
     sans: 'var(--font-display)',
     serif: 'var(--font-serif)',
+    serifBook: 'var(--font-serif)',
     rounded: 'var(--font-rounded)',
     mono: 'var(--font-mono)',
   },
