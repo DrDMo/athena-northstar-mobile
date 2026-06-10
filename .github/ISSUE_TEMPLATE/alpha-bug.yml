@@ -1,0 +1,62 @@
+name: "Alpha bug report"
+description: "Report something that went wrong during the alpha test."
+title: "[alpha] "
+labels: ["alpha-2026-06-14", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing North Star Appraisal. Don't worry about
+        being precise — a rough note we can follow up on beats no note.
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did it happen?
+      options:
+        - Mobile app (iPhone)
+        - Mobile app (Android)
+        - Website
+        - The Agent
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: In plain words — what did you see?
+      placeholder: "I tapped File on a photo and the app froze."
+    validations:
+      required: true
+  - type: textarea
+    id: what-expected
+    attributes:
+      label: What did you expect to happen?
+      placeholder: "I expected the photo to file under the assignment."
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: What were you doing right before?
+      description: A rough list of steps, if you remember them.
+      placeholder: |
+        1. Opened the Inbox tab
+        2. Tapped File on the first photo
+        3. ...
+    validations:
+      required: false
+  - type: input
+    id: device
+    attributes:
+      label: What device + version?
+      placeholder: "iPhone 14, iOS 18.2  /  Pixel 7, Android 15"
+    validations:
+      required: false
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot (optional)
+      description: Paste or drag a screenshot here if you have one. It helps a lot.
+    validations:
+      required: false
