@@ -51,6 +51,8 @@ export type AuthMe = {
   tenant_slug: string;
   role?: 'tenant_user' | 'admin';
   session_expires_at?: string;
+  /** Raw session token — present on login/signup responses only (#380). */
+  session_token?: string;
 };
 
 /**
@@ -71,16 +73,21 @@ export async function login(input: {
     const body = await res.json().catch(() => ({ message: 'login failed' }));
     throw new Error(body.message ?? `login failed (${res.status})`);
   }
-  const setCookie =
-    // RN puts Set-Cookie under the same name; on web it's hidden.
-    res.headers.get('set-cookie') ?? res.headers.get('Set-Cookie');
-  if (setCookie) {
-    const match = setCookie.match(/session=([^;]+)/);
-    if (match?.[1]) {
-      await saveSession(match[1]);
-    }
+  // #380: React Native (especially Android) does NOT expose the
+  // `Set-Cookie` response header to JS, so reading the token from it
+  // silently failed and the session was never stored — login "succeeded"
+  // then bounced straight back. The backend now also returns the raw token
+  // in the body; read it there. Keep the Set-Cookie path as a web fallback.
+  const body = (await res.json()) as AuthMe;
+  if (body.session_token) {
+    await saveSession(body.session_token);
+  } else {
+    const setCookie =
+      res.headers.get('set-cookie') ?? res.headers.get('Set-Cookie');
+    const match = setCookie?.match(/session=([^;]+)/);
+    if (match?.[1]) await saveSession(match[1]);
   }
-  return (await res.json()) as AuthMe;
+  return body;
 }
 
 export async function logout(): Promise<void> {
