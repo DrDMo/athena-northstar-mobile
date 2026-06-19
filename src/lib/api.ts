@@ -3,10 +3,11 @@
  * appraisal.athenanorthstar.com. Mirrors the shape of `web/src/lib/api.ts`
  * so the two surfaces stay grep-compatible.
  *
- * Authentication: the backend accepts either a `Cookie: session=…`
- * header (web app) or an `Authorization: Bearer …` API key
- * (programmatic clients). The mobile client uses the cookie form,
- * persisting the token via {@link saveSession} from `./session`.
+ * Authentication: the backend accepts the session token via the
+ * `X-Session-Token` header (native clients can't set `Cookie`), a
+ * `Cookie: session=…` header (web), or `Authorization: Bearer …` (API
+ * keys). The mobile client sends `X-Session-Token`, reading the token
+ * from the login response body and persisting it via {@link saveSession}.
  *
  * The API base URL is sourced from `app.json` → `expo.extra.apiBase`.
  * Override in dev by editing app.json directly.
@@ -34,7 +35,11 @@ export async function apiFetch(
     headers.set('content-type', 'application/json');
   }
   if (session) {
-    headers.set('cookie', `session=${session}`);
+    // #380: send the token in a custom header, NOT `Cookie`. `Cookie` is a
+    // forbidden request header that React Native (especially Android)
+    // silently drops, so the cookie form never reached the server and every
+    // authed call 401'd. The backend reads the token from `x-session-token`.
+    headers.set('x-session-token', session);
   }
   return fetch(url, { ...init, headers });
 }
