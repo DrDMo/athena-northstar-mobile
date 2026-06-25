@@ -101,6 +101,12 @@ function contentTypeForExt(ext: string): string | undefined {
       return 'audio/wav';
     case 'caf':
       return 'audio/x-caf';
+    case 'txt':
+      // text_note captures: the body is written to a temp .txt the
+      // sync layer uploads as the `file` part (the backend requires a
+      // non-empty file — it has no meta-only path). Declaring
+      // text/plain keeps the persisted content-type truthful.
+      return 'text/plain; charset=utf-8';
     default:
       return undefined;
   }
@@ -123,6 +129,11 @@ function uploadPartFor(item: CaptureMeta): { ext: string; type: string } {
 
   // No usable extension on the URI — fall back by kind.
   if (item.kind === 'voice_note') return { ext: 'm4a', type: 'audio/m4a' };
+  if (item.kind === 'text_note') return { ext: 'txt', type: 'text/plain; charset=utf-8' };
+  // Sketches are exported as PNG by react-native-view-shot (captureRef
+  // `format: 'png'`). The tmpfile URI usually carries a `.png` extension
+  // and is handled above; this keeps the type truthful if it doesn't.
+  if (item.kind === 'sketch') return { ext: 'png', type: 'image/png' };
   return { ext: 'jpg', type: 'image/jpeg' };
 }
 

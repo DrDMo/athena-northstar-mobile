@@ -2,13 +2,21 @@
  * Assignments list — the home tab.
  *
  * Pulls /v1/cases for the current tenant and renders one row per
- * active assignment. Empty state nudges the user to create their
- * first assignment from the web app for now; in a follow-up
- * milestone we add a "+ New" affordance directly here.
+ * assignment. A "+ New" button (header + empty-state) opens the
+ * new-assignment form so the appraiser can start a draft from the
+ * phone instead of switching to the web app.
+ *
+ * Pending drafts: `POST /v1/cases` creates an unpaid
+ * `payment_status='pending'` draft (the $99 activation is paid on the
+ * web). The backend list (`case_files::list_for_tenant`) has NO
+ * payment_status filter, so it returns pending drafts alongside paid
+ * assignments. Rather than hide them, we render pending rows with a
+ * "Pending payment" badge so a draft created here stays visible until
+ * the user pays for it.
  */
 
-import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useFocusEffect, useNavigation, useRouter } from 'expo-router';
+import { useCallback, useLayoutEffect, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -25,6 +33,7 @@ import { listAssignments, type AssignmentSummary } from '@/lib/api';
 
 export default function AssignmentsScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
   const [items, setItems] = useState<AssignmentSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -51,6 +60,24 @@ export default function AssignmentsScreen() {
       load();
     }, [load]),
   );
+
+  // Header "+ New" affordance. Set here (not in the layout) so the
+  // press handler can use this screen's router.
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <Pressable
+          style={({ pressed }) => [styles.headerBtn, pressed && styles.headerBtnPressed]}
+          onPress={() => router.push('/new-assignment')}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="New assignment"
+        >
+          <Text style={styles.headerBtnLabel}>+ New</Text>
+        </Pressable>
+      ),
+    });
+  }, [navigation, router]);
 
   function onRefresh() {
     setRefreshing(true);
@@ -85,11 +112,18 @@ export default function AssignmentsScreen() {
     return (
       <SafeAreaView style={styles.flex}>
         <View style={styles.center}>
-          <Text style={styles.emptyTitle}>No active assignments</Text>
+          <Text style={styles.emptyTitle}>No assignments yet</Text>
           <Text style={styles.emptyBody}>
-            Open one from the web app at appraisal.athenanorthstar.com
-            — it&apos;ll show up here on the next refresh.
+            Start one here, or open it from the web app at
+            appraisal.athenanorthstar.com — it&apos;ll show up here on the
+            next refresh.
           </Text>
+          <Pressable
+            style={({ pressed }) => [styles.newBtn, pressed && styles.newBtnPressed]}
+            onPress={() => router.push('/new-assignment')}
+          >
+            <Text style={styles.newBtnLabel}>+ New assignment</Text>
+          </Pressable>
         </View>
       </SafeAreaView>
     );
@@ -104,19 +138,29 @@ export default function AssignmentsScreen() {
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
-        renderItem={({ item }) => (
-          <Pressable
-            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-            onPress={() => router.push(`/assignments/${item.id}`)}
-          >
-            <Text style={styles.rowTitle}>
-              {item.name ?? item.id.slice(0, 8)}
-            </Text>
-            <Text style={styles.rowMeta}>
-              {item.jurisdiction ?? '—'} · {item.state}
-            </Text>
-          </Pressable>
-        )}
+        renderItem={({ item }) => {
+          const pending = item.payment_status === 'pending';
+          return (
+            <Pressable
+              style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+              onPress={() => router.push(`/assignments/${item.id}`)}
+            >
+              <View style={styles.rowTop}>
+                <Text style={styles.rowTitle}>
+                  {item.name ?? item.id.slice(0, 8)}
+                </Text>
+                {pending ? (
+                  <View style={styles.pendingBadge}>
+                    <Text style={styles.pendingBadgeLabel}>Pending payment</Text>
+                  </View>
+                ) : null}
+              </View>
+              <Text style={styles.rowMeta}>
+                {item.jurisdiction ?? '—'} · {item.state}
+              </Text>
+            </Pressable>
+          );
+        }}
       />
     </SafeAreaView>
   );
@@ -139,7 +183,14 @@ const styles = StyleSheet.create({
     borderColor: Brand.border,
   },
   rowPressed: { opacity: 0.7 },
+  rowTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.two,
+  },
   rowTitle: {
+    flex: 1,
     fontSize: 16,
     fontWeight: '600',
     color: Brand.navyDeep,
@@ -150,6 +201,39 @@ const styles = StyleSheet.create({
     color: Brand.inkMuted,
     letterSpacing: 0.5,
   },
+  pendingBadge: {
+    backgroundColor: Brand.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Brand.amber,
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: 2,
+  },
+  pendingBadgeLabel: {
+    color: Brand.amber,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  headerBtn: {
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.one,
+  },
+  headerBtnPressed: { opacity: 0.6 },
+  headerBtnLabel: {
+    color: Brand.gold,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  newBtn: {
+    backgroundColor: Brand.navyDeep,
+    paddingHorizontal: Spacing.five,
+    paddingVertical: Spacing.three,
+    borderRadius: Radius.md,
+    marginTop: Spacing.five,
+  },
+  newBtnPressed: { opacity: 0.85 },
+  newBtnLabel: { color: Brand.cream, fontSize: 15, fontWeight: '700' },
   emptyTitle: {
     fontSize: 18,
     fontWeight: '600',

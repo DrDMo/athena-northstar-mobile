@@ -121,6 +121,31 @@ export type AssignmentSummary = {
   jurisdiction?: string;
   state: string;
   created_at: string;
+  /**
+   * Pay-to-activate: `"pending"` until the assignment's $99 hosted-
+   * Checkout payment clears, then `"paid"`. `GET /v1/cases`
+   * (`case_files::list_for_tenant`) has no `payment_status` filter, so it
+   * returns pending drafts alongside paid assignments — the client
+   * decides how to surface them. Rows predating the column read as
+   * `"paid"` (the server's serde default), so this is optional on the
+   * wire. The mobile list badges `"pending"` rows rather than hiding
+   * them, so a draft created on the phone (see {@link createAssignment})
+   * is visible until the user pays for it on the web app.
+   */
+  payment_status?: string;
+
+  /**
+   * Domain-pack payload (the wire's `domain_extension`). Raw JSON; the
+   * matching domain pack owns its shape. For the appraisal pack this
+   * carries `property_address`, `report_type`, etc. Present on
+   * `GET /v1/cases/{id}` (and the list); the appraisal web app reads
+   * `domain_extension.property_address` to label an assignment.
+   *
+   * Typed loosely as a record because the client only ever merges into
+   * it (see {@link setAssignmentProperty}) — it never interprets the
+   * other keys, and must preserve any it doesn't recognize.
+   */
+  domain_extension?: Record<string, unknown> | null;
 };
 
 export async function listAssignments(): Promise<AssignmentSummary[]> {
@@ -149,6 +174,101 @@ export async function createAssignment(input: {
   });
   if (!res.ok) throw new Error(`createAssignment failed (${res.status})`);
   return (await res.json()) as AssignmentSummary;
+}
+
+/**
+ * Result of {@link setAssignmentProperty}: the refreshed assignment plus
+ * whether the subject address actually landed in `domain_extension`.
+ *
+ * `persisted` is computed by re-reading the assignment after the PATCH
+ * and checking that `domain_extension.property_address` now equals the
+ * address we sent. See the note on {@link setAssignmentProperty} for why
+ * this round-trip matters.
+ */
+export type SetPropertyResult = {
+  assignment: AssignmentSummary;
+  persisted: boolean;
+};
+
+/**
+ * Set the subject **property address** on an assignment by merging it
+ * into the assignment's `domain_extension`, then PATCHing the whole
+ * object back.
+ *
+ * GET-merge-PATCH — never a blind PATCH. The backend's case-patch path
+ * treats `domain_extension` as a whole-object field: it does not
+ * deep-merge, so a PATCH carrying only `{ property_address }` would (if
+ * accepted) REPLACE the extension wholesale and drop `report_type`,
+ * `due_date`, and every other key the appraisal pack stored. So we:
+ *
+ *   1. GET the assignment to read its current `domain_extension`.
+ *   2. Merge `{ ...current, property_address: address }` — preserving
+ *      every existing key, overwriting only `property_address`.
+ *   3. PATCH the full merged object.
+ *
+ * IMPORTANT — backend capability gap: the deployed `PATCH /v1/cases/{id}`
+ * handler's request DTO (`CasePatchRequest`) has
+ * `#[serde(deny_unknown_fields)]` and exposes ONLY a `name` field. So a
+ * PATCH body carrying `domain_extension` is REJECTED outright with
+ * `422 Unprocessable Entity` — it is not silently dropped. (A backend
+ * change to add a `domain_extension` patch field is being made in
+ * parallel; this client is already written to persist the instant that
+ * lands.) `property_address` IS settable on the CREATE path
+ * (`POST /v1/cases`) and IS returned by `GET /v1/cases/{id}` — only
+ * PATCH-of-extension is missing today.
+ *
+ * Because the 422 is expected (not an error to surface), this function
+ * is GRACEFUL: on a non-ok PATCH it returns `{ assignment: current,
+ * persisted: false }` rather than throwing, so the caller can show the
+ * calm "subject-property field isn't settable from the app yet" message
+ * instead of a raw "(422)" error. The GET-merge-PATCH below is kept
+ * correct-by-construction so it persists the moment the backend accepts
+ * the field. Regardless of `persisted`, the address text_note written by
+ * the address-capture screen remains the durable, audit-chained record.
+ */
+export async function setAssignmentProperty(
+  assignmentId: string,
+  address: string,
+): Promise<SetPropertyResult> {
+  // 1. Read current state so we merge, not clobber.
+  const current = await getAssignment(assignmentId);
+  const currentExt: Record<string, unknown> =
+    current.domain_extension && typeof current.domain_extension === 'object'
+      ? current.domain_extension
+      : {};
+
+  // 2. Merge — preserve every existing key; set only property_address.
+  const merged: Record<string, unknown> = {
+    ...currentExt,
+    property_address: address,
+  };
+
+  // 3. PATCH the whole merged extension back.
+  const res = await apiFetch(`/v1/cases/${encodeURIComponent(assignmentId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ domain_extension: merged }),
+  });
+  // The deployed handler rejects an unknown `domain_extension` field with
+  // 422 (deny_unknown_fields; see the doc note). That's EXPECTED today —
+  // don't throw. Report `persisted: false` against the current state so
+  // the caller shows the calm "not settable from the app yet" message
+  // rather than a raw error. We hand back `current` (already in hand) to
+  // avoid a needless extra GET on the known-non-persisting path.
+  if (!res.ok) {
+    return { assignment: current, persisted: false };
+  }
+
+  // 4. Verify: re-read and confirm the address actually landed. Even a
+  //    2xx here does NOT prove the write took (the handler could accept
+  //    and ignore), so always verify against a fresh read.
+  const refreshed = await getAssignment(assignmentId);
+  const landed =
+    refreshed.domain_extension &&
+    typeof refreshed.domain_extension === 'object' &&
+    (refreshed.domain_extension as Record<string, unknown>).property_address ===
+      address;
+
+  return { assignment: refreshed, persisted: Boolean(landed) };
 }
 
 // ---------------------------------------------------------------------------

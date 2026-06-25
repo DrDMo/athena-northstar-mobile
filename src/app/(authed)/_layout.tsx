@@ -84,6 +84,41 @@ export default function AuthedLayout() {
         }}
       />
       <Tabs.Screen
+        name="text-note"
+        options={{
+          href: null,
+          headerShown: false,
+        }}
+      />
+      <Tabs.Screen
+        name="mls-scan"
+        options={{
+          href: null,
+          headerShown: false,
+        }}
+      />
+      <Tabs.Screen
+        name="sketch-capture"
+        options={{
+          href: null,
+          headerShown: false,
+        }}
+      />
+      <Tabs.Screen
+        name="address-capture"
+        options={{
+          href: null,
+          headerShown: false,
+        }}
+      />
+      <Tabs.Screen
+        name="new-assignment"
+        options={{
+          href: null,
+          title: 'New assignment',
+        }}
+      />
+      <Tabs.Screen
         name="assignments/[id]"
         options={{
           href: null,

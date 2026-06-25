@@ -8,10 +8,12 @@
  *
  *   - Photo: expo-camera, EXIF + GPS preserved          (LIVE)
  *   - Voice note: expo-audio, .m4a recordings           (LIVE)
- *   - Sketch: react-native-svg + gesture-handler canvas (soon)
- *   - Address lookup: Apple Maps / Geocoder reverse-geocode (soon)
- *   - Scan barcode (MLS sticker on listing flyer): expo-barcode-scanner (soon)
- *   - Text note: tag a typed note to a workfile         (soon)
+ *   - Sketch: react-native-svg + gesture-handler canvas, exported to
+ *     PNG via react-native-view-shot                    (LIVE)
+ *   - Address lookup: expo-location reverse-geocode → sets the
+ *     assignment's subject property address             (LIVE)
+ *   - Scan barcode (MLS sticker on listing flyer): expo-camera scanner (LIVE)
+ *   - Text note: tag a typed note to a workfile         (LIVE)
  *
  * One-handed UX is the design constraint here — most field
  * appraisers are holding a tape measure or clipboard in the other
@@ -28,17 +30,23 @@ type Tile = {
   key: string;
   title: string;
   sub: string;
-  href?: '/photo-capture' | '/voice-capture';
+  href?:
+    | '/photo-capture'
+    | '/voice-capture'
+    | '/text-note'
+    | '/mls-scan'
+    | '/sketch-capture'
+    | '/address-capture';
   disabled?: boolean;
 };
 
 const TILES: Tile[] = [
   { key: 'photo', title: 'Photo', sub: 'with EXIF + GPS', href: '/photo-capture' },
   { key: 'voice', title: 'Voice note', sub: '.m4a recording', href: '/voice-capture' },
-  { key: 'sketch', title: 'Sketch', sub: 'finger or stylus', disabled: true },
-  { key: 'address', title: 'Address', sub: 'lookup + reverse geocode', disabled: true },
-  { key: 'mls', title: 'MLS scan', sub: 'barcode → comp', disabled: true },
-  { key: 'note', title: 'Text note', sub: 'tag to a workfile', disabled: true },
+  { key: 'sketch', title: 'Sketch', sub: 'finger or stylus', href: '/sketch-capture' },
+  { key: 'address', title: 'Address', sub: 'lookup + reverse geocode', href: '/address-capture' },
+  { key: 'mls', title: 'MLS scan', sub: 'barcode → comp', href: '/mls-scan' },
+  { key: 'note', title: 'Text note', sub: 'tag to a workfile', href: '/text-note' },
 ];
 
 export default function CaptureScreen() {
@@ -77,10 +85,10 @@ export default function CaptureScreen() {
         </View>
 
         <Text style={styles.fine}>
-          Photo and Voice note are live. Each capture is saved on this
+          Every quick action is live. Each capture is saved on this
           device and waits in a queue that survives closing the app, then
-          syncs to your workfile when you have signal. Sketch, Address,
-          MLS scan, and Text note are coming soon.
+          syncs to your workfile when you have signal. Address lookup also
+          sets the subject property on the assignment you pick.
         </Text>
       </ScrollView>
     </SafeAreaView>
