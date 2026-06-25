@@ -173,6 +173,14 @@ export type CaptureSummary = {
   workfile_id?: string;
   geo?: { lat?: number; lon?: number; accuracyMeters?: number };
   caption?: string;
+  /**
+   * Transcription state for voice notes (null for non-audio captures).
+   * queued | in_progress | completed | failed — surfaced read-only;
+   * the server runs the transcription pipeline after upload.
+   */
+  transcript_status?: string;
+  /** Typed transcript text once `transcript_status` is `completed`. */
+  transcript_text?: string;
 };
 
 export async function listCaptureInbox(): Promise<CaptureSummary[]> {
@@ -201,6 +209,51 @@ export async function deleteCapture(id: string): Promise<void> {
   if (!res.ok && res.status !== 404) {
     throw new Error(`deleteCapture failed (${res.status})`);
   }
+}
+
+/**
+ * Re-poll the transcription pipeline for a voice note and return the
+ * refreshed capture. The server checks the Transcribe job, persists
+ * the typed text when it's done, and hands back the updated summary
+ * (with `transcript_status` + `transcript_text`).
+ *
+ * Surfaces friendly errors for the states the field workflow hits:
+ *   - 404: transcription wasn't kicked yet (uploaded moments ago, or
+ *          this build of the server has transcription off)
+ *   - 409: the job is mid-flight; try again shortly
+ *   - 503: the server can't reach storage/transcription right now
+ * None of these should crash the screen — the caller shows the message.
+ */
+export async function refreshTranscript(id: string): Promise<CaptureSummary> {
+  const res = await apiFetch(
+    `/v1/captures/${encodeURIComponent(id)}/transcribe/refresh`,
+    { method: 'POST' },
+  );
+  if (!res.ok) {
+    let detail: string;
+    switch (res.status) {
+      case 404:
+        detail = 'Transcription hasn’t started yet. Try again in a moment.';
+        break;
+      case 409:
+        detail = 'Still transcribing. Pull to refresh again shortly.';
+        break;
+      case 503:
+        detail = 'Transcription is unavailable right now. Try again later.';
+        break;
+      default:
+        detail = `Couldn’t refresh the transcript (HTTP ${res.status}).`;
+    }
+    // Prefer the server's message when it sent one.
+    try {
+      const body = (await res.json()) as { message?: string };
+      if (body?.message) detail = body.message;
+    } catch {
+      // non-JSON body — keep the friendly default
+    }
+    throw new Error(detail);
+  }
+  return (await res.json()) as CaptureSummary;
 }
 
 export async function getCaptureDownloadUrl(id: string): Promise<{

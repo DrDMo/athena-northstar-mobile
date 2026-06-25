@@ -1,14 +1,17 @@
 /**
  * Capture entry point — the big-buttoned in-the-field surface.
  *
- * v0.1 ships as a placeholder grid. Each tile becomes a real
- * capture flow in a follow-up milestone:
+ * Photo and Voice note are live: each writes a real file, queues it to
+ * the on-device store (AsyncStorage), and syncs to the backend when
+ * signal returns. The queue survives app restarts, so nothing is lost
+ * in a dead zone. The remaining tiles are still placeholders:
  *
- *   - Photo: expo-camera, EXIF + GPS preserved
- *   - Voice note: expo-av, .m4a recordings
- *   - Sketch: react-native-svg + gesture-handler canvas
- *   - Address lookup: Apple Maps / Geocoder reverse-geocode
- *   - Scan barcode (MLS sticker on listing flyer): expo-barcode-scanner
+ *   - Photo: expo-camera, EXIF + GPS preserved          (LIVE)
+ *   - Voice note: expo-audio, .m4a recordings           (LIVE)
+ *   - Sketch: react-native-svg + gesture-handler canvas (soon)
+ *   - Address lookup: Apple Maps / Geocoder reverse-geocode (soon)
+ *   - Scan barcode (MLS sticker on listing flyer): expo-barcode-scanner (soon)
+ *   - Text note: tag a typed note to a workfile         (soon)
  *
  * One-handed UX is the design constraint here — most field
  * appraisers are holding a tape measure or clipboard in the other
@@ -74,10 +77,10 @@ export default function CaptureScreen() {
         </View>
 
         <Text style={styles.fine}>
-          Photo capture is live. Voice, sketch, address and MLS-scan
-          flows ship in subsequent milestones. Captures stay on this
-          device until sync-to-workfile (m4) — for now they queue in
-          the photo screen and clear when you leave it.
+          Photo and Voice note are live. Each capture is saved on this
+          device and waits in a queue that survives closing the app, then
+          syncs to your workfile when you have signal. Sketch, Address,
+          MLS scan, and Text note are coming soon.
         </Text>
       </ScrollView>
     </SafeAreaView>

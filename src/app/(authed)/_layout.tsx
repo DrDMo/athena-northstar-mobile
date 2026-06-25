@@ -90,6 +90,13 @@ export default function AuthedLayout() {
           title: 'Assignment',
         }}
       />
+      <Tabs.Screen
+        name="captures/[id]"
+        options={{
+          href: null,
+          title: 'Capture',
+        }}
+      />
     </Tabs>
   );
 }

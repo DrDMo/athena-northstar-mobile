@@ -84,6 +84,32 @@ export default function InboxScreen() {
     load();
   };
 
+  // Declared before onLinkCapture so the picker is in scope when the
+  // assignments promise resolves (avoids a use-before-declare).
+  const showAssignmentPicker = useCallback(
+    (capture: CaptureSummary, assignments: AssignmentSummary[]) => {
+      const buttons = assignments.slice(0, 8).map((a) => ({
+        text: a.name ?? `${a.jurisdiction ?? a.state} · ${a.id.slice(0, 8)}`,
+        onPress: async () => {
+          try {
+            void Haptics.notificationAsync(
+              Haptics.NotificationFeedbackType.Success,
+            );
+            await linkCapture(capture.id, { case_id: a.id });
+            setItems((prev) => prev.filter((c) => c.id !== capture.id));
+          } catch (e) {
+            Alert.alert('Link failed', (e as Error).message);
+          }
+        },
+      }));
+      Alert.alert('File to assignment', undefined, [
+        ...buttons,
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    },
+    [],
+  );
+
   const onLinkCapture = useCallback(
     (capture: CaptureSummary) => {
       // Pull assignments fresh so the picker isn't stale.
@@ -102,32 +128,8 @@ export default function InboxScreen() {
           Alert.alert('Couldn’t load assignments', (e as Error).message),
         );
     },
-    [],
+    [showAssignmentPicker],
   );
-
-  function showAssignmentPicker(
-    capture: CaptureSummary,
-    assignments: AssignmentSummary[],
-  ) {
-    const buttons = assignments.slice(0, 8).map((a) => ({
-      text: a.name ?? `${a.jurisdiction ?? a.state} · ${a.id.slice(0, 8)}`,
-      onPress: async () => {
-        try {
-          void Haptics.notificationAsync(
-            Haptics.NotificationFeedbackType.Success,
-          );
-          await linkCapture(capture.id, { case_id: a.id });
-          setItems((prev) => prev.filter((c) => c.id !== capture.id));
-        } catch (e) {
-          Alert.alert('Link failed', (e as Error).message);
-        }
-      },
-    }));
-    Alert.alert('File to assignment', undefined, [
-      ...buttons,
-      { text: 'Cancel', style: 'cancel' },
-    ]);
-  }
 
   const onDeleteCapture = useCallback((capture: CaptureSummary) => {
     Alert.alert(
@@ -221,6 +223,7 @@ export default function InboxScreen() {
           <CaptureRow
             item={item}
             thumbUrl={thumbs[item.id]}
+            onOpen={() => router.push(`/captures/${item.id}`)}
             onLink={() => onLinkCapture(item)}
             onDelete={() => onDeleteCapture(item)}
           />
@@ -237,46 +240,55 @@ export default function InboxScreen() {
 function CaptureRow({
   item,
   thumbUrl,
+  onOpen,
   onLink,
   onDelete,
 }: {
   item: CaptureSummary;
   thumbUrl: string | null | undefined;
+  onOpen: () => void;
   onLink: () => void;
   onDelete: () => void;
 }) {
   return (
     <View style={styles.row}>
-      <View style={styles.thumbWrap}>
-        {item.kind === 'photo' && thumbUrl ? (
-          <Image source={{ uri: thumbUrl }} style={styles.thumb} />
-        ) : item.kind === 'photo' ? (
-          <View style={[styles.thumb, styles.thumbPlaceholder]}>
-            <ActivityIndicator color={Brand.gold} size="small" />
-          </View>
-        ) : (
-          <View style={[styles.thumb, styles.thumbIcon]}>
-            <Text style={styles.thumbIconLabel}>{iconFor(item.kind)}</Text>
-          </View>
-        )}
-        {item.geo ? (
-          <View style={styles.gpsBadge}>
-            <Text style={styles.gpsBadgeLabel}>GPS</Text>
-          </View>
-        ) : null}
-      </View>
+      <Pressable
+        style={({ pressed }) => [styles.rowTap, pressed && styles.actionPressed]}
+        onPress={onOpen}
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${labelFor(item.kind)}`}
+      >
+        <View style={styles.thumbWrap}>
+          {item.kind === 'photo' && thumbUrl ? (
+            <Image source={{ uri: thumbUrl }} style={styles.thumb} />
+          ) : item.kind === 'photo' ? (
+            <View style={[styles.thumb, styles.thumbPlaceholder]}>
+              <ActivityIndicator color={Brand.gold} size="small" />
+            </View>
+          ) : (
+            <View style={[styles.thumb, styles.thumbIcon]}>
+              <Text style={styles.thumbIconLabel}>{iconFor(item.kind)}</Text>
+            </View>
+          )}
+          {item.geo ? (
+            <View style={styles.gpsBadge}>
+              <Text style={styles.gpsBadgeLabel}>GPS</Text>
+            </View>
+          ) : null}
+        </View>
 
-      <View style={styles.rowBody}>
-        <Text style={styles.rowTitle}>{labelFor(item.kind)}</Text>
-        <Text style={styles.rowMeta}>
-          {relativeTime(item.captured_at)} · {formatBytes(item.size_bytes)}
-        </Text>
-        {item.caption ? (
-          <Text style={styles.rowCaption} numberOfLines={2}>
-            {item.caption}
+        <View style={styles.rowBody}>
+          <Text style={styles.rowTitle}>{labelFor(item.kind)}</Text>
+          <Text style={styles.rowMeta}>
+            {relativeTime(item.captured_at)} · {formatBytes(item.size_bytes)}
           </Text>
-        ) : null}
-      </View>
+          {item.caption ? (
+            <Text style={styles.rowCaption} numberOfLines={2}>
+              {item.caption}
+            </Text>
+          ) : null}
+        </View>
+      </Pressable>
 
       <View style={styles.rowActions}>
         <Pressable
@@ -388,6 +400,12 @@ const styles = StyleSheet.create({
     padding: Spacing.three,
     gap: Spacing.three,
     alignItems: 'center',
+  },
+  rowTap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
   },
   thumbWrap: { position: 'relative' },
   thumb: {

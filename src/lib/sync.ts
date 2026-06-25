@@ -81,11 +81,60 @@ export async function syncNow(): Promise<SyncResult> {
   return { attempted, succeeded, failed };
 }
 
+/**
+ * Map a lowercase file extension to its upload content-type. Voice
+ * notes (.m4a) MUST NOT be sent as image/jpeg — the server keys audio
+ * handling, transcription, and hash provenance off the declared type.
+ */
+function contentTypeForExt(ext: string): string | undefined {
+  switch (ext) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'png':
+      return 'image/png';
+    case 'm4a':
+      return 'audio/m4a';
+    case 'mp4':
+      return 'audio/mp4';
+    case 'wav':
+      return 'audio/wav';
+    case 'caf':
+      return 'audio/x-caf';
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Derive the upload filename extension + content-type from the actual
+ * recording the camera/recorder wrote. Prefer the real extension on
+ * `localUri`; fall back to a sensible default by capture `kind` so a
+ * URI without an extension still uploads with a truthful type.
+ */
+function uploadPartFor(item: CaptureMeta): { ext: string; type: string } {
+  // Strip any query/fragment, then read the trailing extension.
+  const path = item.localUri.split(/[?#]/)[0];
+  const dot = path.lastIndexOf('.');
+  const rawExt =
+    dot >= 0 ? path.slice(dot + 1).toLowerCase() : '';
+  const fromExt = rawExt ? contentTypeForExt(rawExt) : undefined;
+  if (fromExt) return { ext: rawExt, type: fromExt };
+
+  // No usable extension on the URI — fall back by kind.
+  if (item.kind === 'voice_note') return { ext: 'm4a', type: 'audio/m4a' };
+  return { ext: 'jpg', type: 'image/jpeg' };
+}
+
 async function uploadOne(item: CaptureMeta): Promise<void> {
   // React Native FormData supports the {uri, name, type} blob shape
   // for file uploads, which is what expo-camera writes. No need to
   // read the file into JS first.
   const form = new FormData();
+
+  // Derive the filename + content-type from the real recording so
+  // voice notes upload as audio, not a mislabeled JPEG.
+  const { ext, type } = uploadPartFor(item);
 
   // The cast is required because RN's FormData typings don't match
   // the W3C spec; the runtime accepts {uri,name,type}.
@@ -93,8 +142,8 @@ async function uploadOne(item: CaptureMeta): Promise<void> {
     'file',
     {
       uri: item.localUri,
-      name: `${item.id}.jpg`,
-      type: 'image/jpeg',
+      name: `${item.id}.${ext}`,
+      type,
     } as unknown as Blob,
   );
 

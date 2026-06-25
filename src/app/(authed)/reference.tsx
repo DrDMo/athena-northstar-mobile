@@ -20,6 +20,7 @@ import {
   FlatList,
   Linking,
   Pressable,
+  RefreshControl,
   StyleSheet,
   Text,
   TextInput,
@@ -36,6 +37,7 @@ import {
 
 export default function ReferenceScreen() {
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [catalogVersion, setCatalogVersion] = useState<string | null>(null);
   const [rules, setRules] = useState<RuleEntry[]>([]);
@@ -65,14 +67,22 @@ export default function ReferenceScreen() {
       setError((e as Error).message);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
+  // Pull-to-refresh: always re-fetch the newest catalog, even if we
+  // already have rules — an admin may have published a new version.
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    load();
+  }, [load]);
+
   useFocusEffect(
     useCallback(() => {
-      // Only load if we don't have rules yet — the catalog is large
-      // and doesn't change often. Pull-to-refresh handles the
-      // explicit re-fetch path.
+      // Only auto-load on focus if we don't have rules yet — the
+      // catalog is large and doesn't change often. Pull-to-refresh
+      // handles the explicit re-fetch path.
       if (rules.length === 0 && !error) {
         load();
       }
@@ -167,6 +177,13 @@ export default function ReferenceScreen() {
         data={filtered}
         keyExtractor={(r) => r.id}
         keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={Brand.gold}
+          />
+        }
         renderItem={({ item }) => (
           <RuleCard
             rule={item}
