@@ -21,7 +21,6 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
-  Image,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -31,6 +30,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 
+import { CaptureRow } from '@/components/CaptureRow';
 import { Brand, Radius, Spacing } from '@/constants/theme';
 import {
   deleteCapture,
@@ -220,7 +220,7 @@ export default function InboxScreen() {
           </View>
         }
         renderItem={({ item }) => (
-          <CaptureRow
+          <InboxCaptureRow
             item={item}
             thumbUrl={thumbs[item.id]}
             onOpen={() => router.push(`/captures/${item.id}`)}
@@ -234,10 +234,12 @@ export default function InboxScreen() {
 }
 
 // ---------------------------------------------------------------------------
-// Row
+// Row — the shared presentational CaptureRow (thumb + GPS + body), wrapped
+// here with the Inbox-only File/Delete action column as a sibling. The
+// `showSize` flag preserves the Inbox's "5m ago · 1.2 MB" meta line.
 // ---------------------------------------------------------------------------
 
-function CaptureRow({
+function InboxCaptureRow({
   item,
   thumbUrl,
   onOpen,
@@ -252,43 +254,7 @@ function CaptureRow({
 }) {
   return (
     <View style={styles.row}>
-      <Pressable
-        style={({ pressed }) => [styles.rowTap, pressed && styles.actionPressed]}
-        onPress={onOpen}
-        accessibilityRole="button"
-        accessibilityLabel={`Open ${labelFor(item.kind)}`}
-      >
-        <View style={styles.thumbWrap}>
-          {item.kind === 'photo' && thumbUrl ? (
-            <Image source={{ uri: thumbUrl }} style={styles.thumb} />
-          ) : item.kind === 'photo' ? (
-            <View style={[styles.thumb, styles.thumbPlaceholder]}>
-              <ActivityIndicator color={Brand.gold} size="small" />
-            </View>
-          ) : (
-            <View style={[styles.thumb, styles.thumbIcon]}>
-              <Text style={styles.thumbIconLabel}>{iconFor(item.kind)}</Text>
-            </View>
-          )}
-          {item.geo ? (
-            <View style={styles.gpsBadge}>
-              <Text style={styles.gpsBadgeLabel}>GPS</Text>
-            </View>
-          ) : null}
-        </View>
-
-        <View style={styles.rowBody}>
-          <Text style={styles.rowTitle}>{labelFor(item.kind)}</Text>
-          <Text style={styles.rowMeta}>
-            {relativeTime(item.captured_at)} · {formatBytes(item.size_bytes)}
-          </Text>
-          {item.caption ? (
-            <Text style={styles.rowCaption} numberOfLines={2}>
-              {item.caption}
-            </Text>
-          ) : null}
-        </View>
-      </Pressable>
+      <CaptureRow item={item} thumbUrl={thumbUrl} onPress={onOpen} showSize />
 
       <View style={styles.rowActions}>
         <Pressable
@@ -311,59 +277,6 @@ function CaptureRow({
       </View>
     </View>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function iconFor(kind: CaptureSummary['kind']): string {
-  switch (kind) {
-    case 'voice_note':
-      return '🎙';
-    case 'sketch':
-      return '✏️';
-    case 'text_note':
-      return '📝';
-    case 'photo':
-    default:
-      return '📷';
-  }
-}
-
-function labelFor(kind: CaptureSummary['kind']): string {
-  switch (kind) {
-    case 'voice_note':
-      return 'Voice note';
-    case 'sketch':
-      return 'Sketch';
-    case 'text_note':
-      return 'Text note';
-    case 'photo':
-    default:
-      return 'Photo';
-  }
-}
-
-function relativeTime(iso: string): string {
-  const then = new Date(iso).getTime();
-  const now = Date.now();
-  const diffSec = Math.floor((now - then) / 1000);
-  if (diffSec < 60) return 'just now';
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
-  if (diffSec < 86_400) return `${Math.floor(diffSec / 3600)}h ago`;
-  if (diffSec < 604_800) return `${Math.floor(diffSec / 86_400)}d ago`;
-  try {
-    return new Date(iso).toLocaleDateString();
-  } catch {
-    return iso;
-  }
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 const styles = StyleSheet.create({
@@ -400,51 +313,6 @@ const styles = StyleSheet.create({
     padding: Spacing.three,
     gap: Spacing.three,
     alignItems: 'center',
-  },
-  rowTap: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.three,
-  },
-  thumbWrap: { position: 'relative' },
-  thumb: {
-    width: 56,
-    height: 56,
-    borderRadius: Radius.sm,
-    backgroundColor: '#1a1a1a',
-  },
-  thumbPlaceholder: { alignItems: 'center', justifyContent: 'center' },
-  thumbIcon: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Brand.cream,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Brand.border,
-  },
-  thumbIconLabel: { fontSize: 24 },
-  gpsBadge: {
-    position: 'absolute',
-    top: 2,
-    right: 2,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    borderRadius: 3,
-    backgroundColor: Brand.green,
-  },
-  gpsBadgeLabel: { color: '#fff', fontSize: 8, fontWeight: '700' },
-  rowBody: { flex: 1 },
-  rowTitle: { fontSize: 15, fontWeight: '600', color: Brand.navyDeep },
-  rowMeta: {
-    fontSize: 12,
-    color: Brand.inkMuted,
-    marginTop: 2,
-  },
-  rowCaption: {
-    fontSize: 12,
-    color: Brand.ink,
-    marginTop: Spacing.one,
-    fontStyle: 'italic',
   },
   rowActions: {
     flexDirection: 'column',

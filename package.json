@@ -1,7 +1,7 @@
 {
   "name": "athena-northstar-mobile",
   "main": "expo-router/entry",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "dependencies": {
     "@expo-google-fonts/playfair-display": "^0.4.2",
     "@expo/ui": "~56.0.16",

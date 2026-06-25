@@ -190,6 +190,29 @@ export async function listCaptureInbox(): Promise<CaptureSummary[]> {
   return body.captures;
 }
 
+/**
+ * List the captures already filed to one assignment (= case on the
+ * backend), newest first.
+ *
+ * Uses the dedicated `GET /v1/cases/{id}/captures` endpoint rather than
+ * filtering {@link listCaptureInbox}: the inbox only returns *unfiled*
+ * captures (`case_id IS NULL`), so a client-side filter for filed
+ * captures would always come back empty. Mirrors the web app's
+ * `listCapturesForCase`.
+ */
+export async function listAssignmentCaptures(
+  assignmentId: string,
+): Promise<CaptureSummary[]> {
+  const res = await apiFetch(
+    `/v1/cases/${encodeURIComponent(assignmentId)}/captures`,
+  );
+  if (!res.ok) {
+    throw new Error(`listAssignmentCaptures failed (${res.status})`);
+  }
+  const body = (await res.json()) as { captures: CaptureSummary[] };
+  return body.captures;
+}
+
 export async function linkCapture(
   id: string,
   input: { case_id?: string; workfile_id?: string },

@@ -2,11 +2,14 @@
  * Capture detail — open a single capture from the Inbox to see its
  * meta and, for voice notes, the typed transcription.
  *
- * The list endpoint (`GET /v1/captures`) already returns
+ * The list endpoints (`GET /v1/captures` for the unfiled inbox,
+ * `GET /v1/cases/{id}/captures` for a filed assignment) already return
  * `transcript_status` + `transcript_text`, so the first paint comes
- * from the inbox data the user just tapped. Pull-to-refresh re-polls
- * the transcription pipeline via `refreshTranscript`, which returns
- * the freshest single capture — handy while a job is still running.
+ * from the list data the user just tapped. When the caller hands us a
+ * `caseId` route param, this capture is *filed* and won't be in the
+ * inbox, so we fall back to the assignment's captures. Pull-to-refresh
+ * re-polls the transcription pipeline via `refreshTranscript`, which
+ * returns the freshest single capture — handy while a job is running.
  *
  * Voice-note states the appraiser can land on:
  *   - completed → show the transcript text
@@ -30,13 +33,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Brand, Radius, Spacing } from '@/constants/theme';
 import {
+  listAssignmentCaptures,
   listCaptureInbox,
   refreshTranscript,
   type CaptureSummary,
 } from '@/lib/api';
+import { labelFor } from '@/lib/captureLabels';
 
 export default function CaptureDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, caseId } = useLocalSearchParams<{ id: string; caseId?: string }>();
   const router = useRouter();
   const [capture, setCapture] = useState<CaptureSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -44,17 +49,29 @@ export default function CaptureDetailScreen() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // First paint: pull the inbox and find this capture. There's no
-  // single-capture GET, but the inbox already carries everything we
-  // need (including the transcript fields).
-  const loadFromInbox = useCallback(async () => {
+  // First paint: resolve this capture. There's no single-capture GET, so
+  // we look in the unfiled inbox first (the path from the Inbox tab). If
+  // it's not there AND we were handed a `caseId` (the path from an
+  // assignment detail), it's a *filed* capture — fall back to that
+  // assignment's captures, which is where filed rows live. Both list
+  // endpoints already carry the transcript fields, so either source
+  // gives a fully-populated row.
+  const resolveCapture = useCallback(async () => {
     if (!id) return;
     setError(null);
     try {
-      const all = await listCaptureInbox();
-      const found = all.find((c) => c.id === id) ?? null;
+      const inbox = await listCaptureInbox();
+      let found = inbox.find((c) => c.id === id) ?? null;
+      if (!found && caseId) {
+        const filed = await listAssignmentCaptures(caseId);
+        found = filed.find((c) => c.id === id) ?? null;
+      }
       if (!found) {
-        setError('This capture is no longer in your inbox.');
+        setError(
+          caseId
+            ? 'This capture is no longer available.'
+            : 'This capture is no longer in your inbox.',
+        );
       } else {
         setCapture(found);
       }
@@ -63,12 +80,12 @@ export default function CaptureDetailScreen() {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, caseId]);
 
   useFocusEffect(
     useCallback(() => {
-      loadFromInbox();
-    }, [loadFromInbox]),
+      resolveCapture();
+    }, [resolveCapture]),
   );
 
   // Pull-to-refresh re-polls the transcription pipeline and swaps in
@@ -176,20 +193,6 @@ function MetaRow({ label, value }: { label: string; value: string }) {
       <Text style={styles.metaValue}>{value}</Text>
     </View>
   );
-}
-
-function labelFor(kind: CaptureSummary['kind']): string {
-  switch (kind) {
-    case 'voice_note':
-      return 'Voice note';
-    case 'sketch':
-      return 'Sketch';
-    case 'text_note':
-      return 'Text note';
-    case 'photo':
-    default:
-      return 'Photo';
-  }
 }
 
 /** Plain-language line for a voice note that has no transcript text. */
