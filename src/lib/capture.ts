@@ -14,6 +14,9 @@
  * survives the next milestone.
  */
 
+import { File, Paths } from 'expo-file-system';
+import * as Location from 'expo-location';
+
 export type CaptureKind = 'photo' | 'voice_note' | 'text_note' | 'sketch';
 
 export type CaptureMeta = {
@@ -64,4 +67,71 @@ export function newCaptureId(): string {
   const ts = Date.now().toString(36);
   const rand = Math.random().toString(36).slice(2, 8).padEnd(6, '0');
   return `cap_${ts}_${rand}`;
+}
+
+/**
+ * Write a text-note body to a temp `.txt` in the cache directory and
+ * return its `file://` URI — the local file the sync layer uploads as
+ * the multipart `file` part.
+ *
+ * Why a real file rather than meta-only: the backend captures handler
+ * (`POST /v1/captures`) REQUIRES a non-empty `file` field — it rejects
+ * an empty upload with `400 "uploaded file is empty"` and there is no
+ * meta-only path. So a `text_note` has to carry its text as the file
+ * body. The caption (a short label) still travels in `meta.caption`;
+ * the full note text lives in the `.txt`. Content-type is
+ * `text/plain; charset=utf-8`, matching the server's default for the
+ * `text_note` kind.
+ *
+ * Uses the SDK 56 synchronous filesystem API (`File`/`Paths`). The
+ * cache directory is correct here: once a capture syncs, its local file
+ * is disposable, and the system may reclaim cache under storage
+ * pressure (the queue tolerates a missing local file by failing that
+ * one upload, not the app).
+ */
+export function writeTextNoteFile(captureId: string, body: string): string {
+  const file = new File(Paths.cache, `${captureId}.txt`);
+  // create() throws if the file already exists; ids are unique per
+  // capture, but guard anyway so a retry doesn't crash the save.
+  if (!file.exists) file.create();
+  file.write(body);
+  return file.uri;
+}
+
+/**
+ * One-shot geotag for a field capture. Requests foreground location
+ * permission and, if granted, returns a single GPS fix shaped as a
+ * {@link CaptureMeta} `geo`. Returns `undefined` when permission is
+ * denied (the capture still saves — a geotag is best-effort).
+ *
+ * Shared by every capture screen (photo, voice, text note, MLS scan,
+ * address) so they stay consistent: ONE accuracy
+ * (`Location.Accuracy.High` — a good field balance on both platforms),
+ * and ONE denied-hint path. The old per-screen copies drifted on both
+ * (some used `Balanced`, the new screens silently dropped the "No
+ * location" hint); this is the single source of truth.
+ *
+ * `onDenied` fires only when permission is permanently blocked
+ * (`canAskAgain === false`) — matching the photo/voice screens, which
+ * surface a "No location — won't be geotagged" hint in that case rather
+ * than nagging on a one-time "deny" the user can still reverse.
+ */
+export async function getCurrentGeo(opts?: {
+  onDenied?: () => void;
+}): Promise<CaptureMeta['geo']> {
+  const { status, canAskAgain } =
+    await Location.requestForegroundPermissionsAsync();
+  if (status !== 'granted') {
+    if (!canAskAgain) opts?.onDenied?.();
+    return undefined;
+  }
+  const pos = await Location.getCurrentPositionAsync({
+    accuracy: Location.Accuracy.High,
+  });
+  return {
+    lat: pos.coords.latitude,
+    lon: pos.coords.longitude,
+    accuracyMeters: pos.coords.accuracy ?? undefined,
+    altitude: pos.coords.altitude ?? undefined,
+  };
 }

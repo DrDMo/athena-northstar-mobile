@@ -22,7 +22,6 @@
 
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
-import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
 import {
@@ -31,7 +30,6 @@ import {
   FlatList,
   Image,
   Linking,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -40,7 +38,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Brand, Radius, Spacing } from '@/constants/theme';
-import { type CaptureMeta, newCaptureId } from '@/lib/capture';
+import { type CaptureMeta, getCurrentGeo, newCaptureId } from '@/lib/capture';
 import { enqueue } from '@/lib/queue';
 import { syncNow } from '@/lib/sync';
 
@@ -86,11 +84,14 @@ export default function PhotoCaptureScreen() {
       // Best-effort geotag. The capture itself is the source of
       // truth — losing the geo doesn't fail the shot.
       try {
-        const loc = await getLocationOnce();
+        const loc = await getCurrentGeo({
+          onDenied: () => setLocationDenied(true),
+        });
         if (loc) {
+          setLocationDenied(false);
           meta.geo = loc;
         }
-      } catch (e) {
+      } catch {
         // swallow; locationDenied flag will surface the UI hint
       }
 
@@ -225,30 +226,6 @@ export default function PhotoCaptureScreen() {
     </View>
   );
 
-  // -------------------------------------------------------------------------
-  // Helpers
-  // -------------------------------------------------------------------------
-
-  async function getLocationOnce(): Promise<CaptureMeta['geo']> {
-    const { status, canAskAgain } = await Location.requestForegroundPermissionsAsync();
-    if (status !== 'granted') {
-      if (!canAskAgain) setLocationDenied(true);
-      return undefined;
-    }
-    setLocationDenied(false);
-    const pos = await Location.getCurrentPositionAsync({
-      accuracy:
-        Platform.OS === 'ios'
-          ? Location.Accuracy.Highest
-          : Location.Accuracy.High,
-    });
-    return {
-      lat: pos.coords.latitude,
-      lon: pos.coords.longitude,
-      accuracyMeters: pos.coords.accuracy ?? undefined,
-      altitude: pos.coords.altitude ?? undefined,
-    };
-  }
 }
 
 const styles = StyleSheet.create({

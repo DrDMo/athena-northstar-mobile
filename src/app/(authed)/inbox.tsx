@@ -84,6 +84,18 @@ export default function InboxScreen() {
     load();
   };
 
+  // TODO(picker-reuse, low): this `showAssignmentPicker` duplicates
+  // `src/lib/assignment-picker.ts` (the same slice(0, 8) + label format).
+  // A future cleanup could build this on `pickAssignment()` — call it,
+  // and on a resolved id run the link + optimistic-remove below. Left
+  // as-is for now because the inbox flow has behavior the shared picker
+  // doesn't: a distinct "No assignments — create one first" message on
+  // the empty case (the shared picker silently resolves to null), no
+  // "Keep in inbox" affordance, and a link side-effect bound to each
+  // button. Migrating risks regressing the file/delete path, which must
+  // stay byte-for-byte identical, so the shared picker isn't adopted here
+  // yet. Don't break the inbox.
+
   // Declared before onLinkCapture so the picker is in scope when the
   // assignments promise resolves (avoids a use-before-declare).
   const showAssignmentPicker = useCallback(

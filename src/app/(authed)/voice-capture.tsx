@@ -23,7 +23,6 @@ import {
   useAudioRecorderState,
 } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
-import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -39,7 +38,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Brand, Radius, Spacing } from '@/constants/theme';
-import { type CaptureMeta, newCaptureId } from '@/lib/capture';
+import { type CaptureMeta, getCurrentGeo, newCaptureId } from '@/lib/capture';
 import { enqueue } from '@/lib/queue';
 import { syncNow } from '@/lib/sync';
 
@@ -109,8 +108,11 @@ export default function VoiceCaptureScreen() {
 
       // Best-effort geotag, same posture as the photo screen.
       try {
-        const geo = await getLocationOnce();
+        const geo = await getCurrentGeo({
+          onDenied: () => setLocationDenied(true),
+        });
         if (geo) {
+          setLocationDenied(false);
           meta.geo = geo;
         }
       } catch {
@@ -236,28 +238,6 @@ export default function VoiceCaptureScreen() {
     </SafeAreaView>
   );
 
-  // -------------------------------------------------------------------------
-  // Helpers
-  // -------------------------------------------------------------------------
-
-  async function getLocationOnce(): Promise<CaptureMeta['geo']> {
-    const { status, canAskAgain } =
-      await Location.requestForegroundPermissionsAsync();
-    if (status !== 'granted') {
-      if (!canAskAgain) setLocationDenied(true);
-      return undefined;
-    }
-    setLocationDenied(false);
-    const pos = await Location.getCurrentPositionAsync({
-      accuracy: Location.Accuracy.Balanced,
-    });
-    return {
-      lat: pos.coords.latitude,
-      lon: pos.coords.longitude,
-      accuracyMeters: pos.coords.accuracy ?? undefined,
-      altitude: pos.coords.altitude ?? undefined,
-    };
-  }
 }
 
 function formatDuration(ms: number): string {
