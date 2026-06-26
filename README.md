@@ -1,4 +1,4 @@
-# North Star ^Appraisal — Mobile
+# North Star Appraisal — Mobile
 
 The field companion to **Athena Systems North Star ^Appraisal**. Lets an
 appraiser work an assignment from the property itself — pull up the
