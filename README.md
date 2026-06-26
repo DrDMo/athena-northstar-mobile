@@ -112,16 +112,22 @@ All endpoint shapes are kept grep-compatible with the web app's
 | m0        | Scaffold: Expo SDK 56, bundle ID, theme tokens                         | done     |
 | m1        | Login screen + cookie-session client                                   | done     |
 | m2        | Authed tab group: Assignments / Capture / Settings                     | done     |
-| m3        | Native photo capture (EXIF + GPS preserved)                            | next     |
-| m4        | Voice note capture (`.m4a`, transcribed server-side)                   | next     |
-| m5        | Sketch capture (gesture canvas → SVG → workfile attachment)            | later    |
-| m6        | Offline queue + sync (work in dead-zone properties without signal)     | later    |
-| m7        | MLS barcode scan                                                       | later    |
+| m3        | Native photo capture (EXIF + GPS preserved)                            | done     |
+| m4        | Voice note capture (`.m4a`, transcribed server-side)                   | done     |
+| m5        | Sketch capture (gesture canvas → SVG strokes → PNG)                    | done     |
+| m6        | Offline queue + sync (AsyncStorage-persisted; dead-zone friendly)      | done     |
+| m7        | MLS barcode scan                                                       | done     |
 | m8        | Apple Pencil + iPad layout                                             | later    |
+| —         | Text note capture                                                      | done     |
+| —         | Address capture (reverse-geocode → sets the subject property)          | done     |
+| —         | Create an assignment from the phone (pending draft)                    | done     |
+| —         | Assignment detail with inline filed captures                           | done     |
 
-The "later" items wait until we have field-testing signal from real
-appraisers using m0–m4 so we don't gold-plate things that don't
-matter to the workflow.
+m0–m7, plus the text-note, address, create-assignment, and
+assignment-detail surfaces, are shipped (in the alpha APK). The one
+remaining "later" item (m8, Apple Pencil + iPad) waits on
+field-testing signal from real appraisers so we don't gold-plate
+ahead of the workflow.
 
 ## Conventions
 
