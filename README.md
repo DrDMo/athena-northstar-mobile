@@ -1,6 +1,6 @@
 # North Star Appraisal — Mobile
 
-The field companion to **Athena Systems North Star ^Appraisal**. Lets an
+The field companion to **Athena Systems North Star Appraisal**. Lets an
 appraiser work an assignment from the property itself — pull up the
 workfile, capture photos with GPS + timestamp baked in, dictate notes,
 sketch sites, and sync everything back into the sealed audit chain
