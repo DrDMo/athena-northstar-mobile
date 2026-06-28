@@ -18,7 +18,7 @@ import {
   useRouter,
   useSegments,
 } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useColorScheme } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
@@ -30,7 +30,8 @@ import {
   useFonts,
 } from '@expo-google-fonts/playfair-display';
 
-import { fetchMe, type AuthMe } from '@/lib/api';
+import { fetchMe } from '@/lib/api';
+import { setAuth, useAuth } from '@/lib/auth-store';
 import { startAutoSyncOnReconnect, syncNow } from '@/lib/sync';
 import { Brand } from '@/constants/theme';
 
@@ -40,8 +41,10 @@ export default function RootLayout() {
   const colorScheme = useColorScheme();
   const router = useRouter();
   const segments = useSegments();
-  const [ready, setReady] = useState(false);
-  const [me, setMe] = useState<AuthMe | null>(null);
+  // #514: `me`/`ready` come from the shared auth store, not local state, so
+  // a fresh login (or sign-out) updates the gate too — otherwise the gate
+  // keeps its cold-start value and bounces the user.
+  const { me, ready } = useAuth();
 
   // Load Playfair Display once at the root. Splash stays up until both
   // fonts AND auth have resolved; otherwise the wordmark would
@@ -62,12 +65,12 @@ export default function RootLayout() {
     (async () => {
       try {
         const got = await fetchMe();
-        if (!cancelled) setMe(got);
+        if (!cancelled) setAuth(got);
       } catch {
-        if (!cancelled) setMe(null);
+        if (!cancelled) setAuth(null);
       } finally {
+        // setAuth() already marks the store ready; just drop the splash.
         if (!cancelled) {
-          setReady(true);
           SplashScreen.hideAsync().catch(() => {});
         }
       }

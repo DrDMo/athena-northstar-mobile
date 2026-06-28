@@ -21,6 +21,7 @@ import Constants from 'expo-constants';
 
 import { Brand, Radius, Spacing } from '@/constants/theme';
 import { fetchMe, logout, type AuthMe } from '@/lib/api';
+import { clearAuth } from '@/lib/auth-store';
 import type { CaptureMeta } from '@/lib/capture';
 import { loadQueue } from '@/lib/queue';
 import { syncNow } from '@/lib/sync';
@@ -84,6 +85,9 @@ export default function SettingsScreen() {
           style: 'destructive',
           onPress: async () => {
             await logout();
+            // #514: clear the shared store so the gate sees signed-out and
+            // doesn't bounce us back into the app.
+            clearAuth();
             router.replace('/login');
           },
         },
