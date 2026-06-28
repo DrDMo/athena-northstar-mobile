@@ -9,8 +9,8 @@
  *     `GestureDetector`. We call `.runOnJS(true)` so the begin/update/end
  *     callbacks run on the JS thread and can `setState` directly — no
  *     reanimated worklet / `runOnJS()` wrapping needed. The root layout
- *     doesn't mount a `GestureHandlerRootView`, so this screen wraps its
- *     own (the supported per-screen pattern).
+ *     mounts a `GestureHandlerRootView` (#518); this screen also wraps
+ *     its own (nesting is harmless) so gestures work regardless.
  *
  *   - RENDER: react-native-svg. Each stroke is an SVG `<Path>` whose `d`
  *     is built from the captured points (`M x y L x y …`). Completed
@@ -27,6 +27,7 @@
  * last stroke) and Clear (drop all strokes).
  */
 
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
@@ -197,8 +198,12 @@ export default function SketchCaptureScreen() {
           {/* Never gated on `busy`: a stranded save must not trap the
               user on a screen holding unsaved strokes. router.back()
               during an in-flight save is safe — the enqueue completes. */}
-          <Pressable style={styles.closeButton} onPress={() => router.back()}>
-            <Text style={styles.closeLabel}>← Cancel</Text>
+          <Pressable
+            style={[styles.closeButton, styles.closeRow]}
+            onPress={() => router.back()}
+          >
+            <Ionicons name="arrow-back" size={15} color={Brand.navyDeep} />
+            <Text style={styles.closeLabel}>Cancel</Text>
           </Pressable>
           <Text style={styles.topTitle}>Sketch</Text>
           <View style={styles.closeButton} />
@@ -308,6 +313,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.two,
     paddingVertical: Spacing.two,
   },
+  closeRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
   closeLabel: { color: Brand.navyDeep, fontSize: 15, fontWeight: '600' },
   topTitle: {
     fontSize: 16,

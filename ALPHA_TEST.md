@@ -100,9 +100,10 @@ Or just email it to hello@athenadecisionsystems.com and we'll log it.
 
 So you don't report these as bugs — they're known gaps:
 
-- **Sketch capture** — the Sketch tile says "SOON". Not built yet.
-- **MLS scan** — also "SOON".
-- **Text note** — also "SOON".
+- **All six field-capture actions are live** — Photo, Voice note,
+  Sketch (draw with a finger or stylus, saved as a PNG), MLS scan
+  (point at a listing barcode), Text note, and Address lookup. No more
+  "SOON" tiles — give each a try and report anything that misbehaves.
 - **Creating a workfile from the phone** — do that on the website
   for now; the phone is read-only on workfiles.
 - **The Agent** — separate desktop app, not part of this mobile test.

@@ -20,6 +20,7 @@
  *     always add address metadata later.
  */
 
+import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
@@ -172,10 +173,10 @@ export default function PhotoCaptureScreen() {
       <SafeAreaView style={styles.overlay} edges={['top', 'bottom']}>
         <View style={styles.topBar}>
           <Pressable style={styles.iconButton} onPress={close} hitSlop={12}>
-            <Text style={styles.iconButtonLabel}>✕</Text>
+            <Ionicons name="close" size={22} color="#fff" />
           </Pressable>
           <Pressable style={styles.iconButton} onPress={flipCamera} hitSlop={12}>
-            <Text style={styles.iconButtonLabel}>⤾</Text>
+            <Ionicons name="camera-reverse" size={22} color="#fff" />
           </Pressable>
         </View>
 

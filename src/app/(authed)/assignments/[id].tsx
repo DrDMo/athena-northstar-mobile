@@ -18,6 +18,7 @@
  * filed from the Inbox tab.
  */
 
+import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -112,8 +113,12 @@ export default function AssignmentDetailScreen() {
         <View style={styles.center}>
           <Text style={styles.errorTitle}>Couldn&apos;t load assignment</Text>
           <Text style={styles.errorBody}>{error ?? 'Not found.'}</Text>
-          <Pressable style={styles.retry} onPress={() => router.back()}>
-            <Text style={styles.retryLabel}>← Back</Text>
+          <Pressable
+            style={[styles.retry, styles.retryRow]}
+            onPress={() => router.back()}
+          >
+            <Ionicons name="arrow-back" size={15} color={Brand.cream} />
+            <Text style={styles.retryLabel}>Back</Text>
           </Pressable>
         </View>
       </SafeAreaView>
@@ -291,5 +296,6 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.three,
     borderRadius: Radius.sm,
   },
+  retryRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
   retryLabel: { color: Brand.cream, fontWeight: '600' },
 });

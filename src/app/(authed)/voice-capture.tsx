@@ -16,6 +16,7 @@
  * photo capture screen.
  */
 
+import { Ionicons } from '@expo/vector-icons';
 import {
   AudioModule,
   RecordingPresets,
@@ -187,8 +188,12 @@ export default function VoiceCaptureScreen() {
     <SafeAreaView style={styles.flex}>
       <ScrollView contentContainerStyle={styles.scroll}>
         <View style={styles.topBar}>
-          <Pressable style={styles.closeButton} onPress={() => router.back()}>
-            <Text style={styles.closeLabel}>← Done</Text>
+          <Pressable
+            style={[styles.closeButton, styles.closeRow]}
+            onPress={() => router.back()}
+          >
+            <Ionicons name="arrow-back" size={15} color={Brand.navyDeep} />
+            <Text style={styles.closeLabel}>Done</Text>
           </Pressable>
           {savedCount > 0 ? (
             <Text style={styles.savedBadge}>{savedCount} saved</Text>
@@ -269,6 +274,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.two,
   },
+  closeRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
   closeLabel: { color: Brand.navyDeep, fontSize: 15, fontWeight: '600' },
   savedBadge: {
     color: Brand.green,

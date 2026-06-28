@@ -15,6 +15,7 @@
  * triage later — same posture as a photo.
  */
 
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
@@ -121,8 +122,12 @@ export default function TextNoteScreen() {
                 back out (the picker / save can otherwise leave them
                 stranded). router.back() during a save is safe; the
                 in-flight enqueue still completes. */}
-            <Pressable style={styles.closeButton} onPress={() => router.back()}>
-              <Text style={styles.closeLabel}>← Cancel</Text>
+            <Pressable
+              style={[styles.closeButton, styles.closeRow]}
+              onPress={() => router.back()}
+            >
+              <Ionicons name="arrow-back" size={15} color={Brand.navyDeep} />
+              <Text style={styles.closeLabel}>Cancel</Text>
             </Pressable>
           </View>
 
@@ -198,6 +203,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.two,
     paddingVertical: Spacing.two,
   },
+  closeRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
   closeLabel: { color: Brand.navyDeep, fontSize: 15, fontWeight: '600' },
   eyebrow: {
     fontSize: 11,

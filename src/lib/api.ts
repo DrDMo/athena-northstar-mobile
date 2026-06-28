@@ -31,7 +31,13 @@ export async function apiFetch(
   const url = `${API_BASE}${path}`;
   const session = await loadSession();
   const headers = new Headers(init.headers ?? {});
-  if (!headers.has('content-type') && init.body) {
+  // #516: do NOT force application/json on FormData uploads — doing so
+  // clobbers the multipart boundary fetch sets automatically, so the
+  // capture upload (`POST /v1/captures`) arrives unparseable and never
+  // syncs. Only default the JSON content-type for non-FormData bodies.
+  const isFormData =
+    typeof FormData !== 'undefined' && init.body instanceof FormData;
+  if (!headers.has('content-type') && init.body && !isFormData) {
     headers.set('content-type', 'application/json');
   }
   if (session) {
