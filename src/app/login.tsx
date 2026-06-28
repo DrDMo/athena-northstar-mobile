@@ -20,6 +20,7 @@ import {
 
 import { Brand, Fonts, Radius, Spacing } from '@/constants/theme';
 import { login } from '@/lib/api';
+import { setAuth } from '@/lib/auth-store';
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -37,7 +38,10 @@ export default function LoginScreen() {
     }
     setSubmitting(true);
     try {
-      await login({ email: email.trim(), password });
+      // #514: publish the user to the shared store BEFORE navigating, so the
+      // root auth-gate sees the signed-in user and doesn't bounce us back.
+      const me = await login({ email: email.trim(), password });
+      setAuth(me);
       router.replace('/');
     } catch (e) {
       Alert.alert('Sign in failed', (e as Error).message);
