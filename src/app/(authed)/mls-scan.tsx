@@ -14,6 +14,7 @@
  * assignment at scan time or leave it in the inbox.
  */
 
+import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
@@ -180,7 +181,7 @@ export default function MlsScanScreen() {
       <SafeAreaView style={styles.overlay} edges={['top', 'bottom']}>
         <View style={styles.topBar}>
           <Pressable style={styles.iconButton} onPress={() => router.back()} hitSlop={12}>
-            <Text style={styles.iconButtonLabel}>✕</Text>
+            <Ionicons name="close" size={22} color="#fff" />
           </Pressable>
         </View>
 

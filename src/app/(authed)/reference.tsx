@@ -13,6 +13,7 @@
  * past a few hundred rules.
  */
 
+import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import {
@@ -245,12 +246,16 @@ function RuleCard({
               </Text>
               {rule.citation.url ? (
                 <Pressable
+                  style={styles.linkRow}
                   onPress={() => Linking.openURL(rule.citation!.url!)}
                   hitSlop={6}
                 >
-                  <Text style={styles.linkLabel}>
-                    Open primary source ↗
-                  </Text>
+                  <Text style={styles.linkLabel}>Open primary source</Text>
+                  <Ionicons
+                    name="open-outline"
+                    size={13}
+                    color={Brand.navyDeep}
+                  />
                 </Pressable>
               ) : null}
             </View>
@@ -405,11 +410,16 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   fieldValueMuted: { color: Brand.inkMuted, fontStyle: 'italic' },
+  linkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.one,
+    marginTop: Spacing.two,
+  },
   linkLabel: {
     fontSize: 13,
     color: Brand.navyDeep,
     fontWeight: '600',
-    marginTop: Spacing.two,
   },
   metaRow: {
     flexDirection: 'row',

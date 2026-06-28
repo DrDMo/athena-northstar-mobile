@@ -14,6 +14,7 @@
  * its long-standing "5m ago · 1.2 MB" display is preserved exactly.
  */
 
+import { Ionicons } from '@expo/vector-icons';
 import {
   ActivityIndicator,
   Image,
@@ -55,7 +56,11 @@ export function CaptureRow({
           </View>
         ) : (
           <View style={[styles.thumb, styles.thumbIcon]}>
-            <Text style={styles.thumbIconLabel}>{iconFor(item.kind)}</Text>
+            <Ionicons
+              name={iconFor(item.kind)}
+              size={24}
+              color={Brand.navyDeep}
+            />
           </View>
         )}
         {item.geo ? (
@@ -112,7 +117,6 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: Brand.border,
   },
-  thumbIconLabel: { fontSize: 24 },
   gpsBadge: {
     position: 'absolute',
     top: 2,

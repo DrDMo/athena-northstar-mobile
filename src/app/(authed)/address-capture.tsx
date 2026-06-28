@@ -35,6 +35,7 @@
  * durable record regardless.
  */
 
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
@@ -230,8 +231,12 @@ export default function AddressCaptureScreen() {
             {/* Never gated on `busy`: the user must always be able to
                 back out. The note is enqueued before any result alert, so
                 backing out during a save loses nothing. */}
-            <Pressable style={styles.closeButton} onPress={() => router.back()}>
-              <Text style={styles.closeLabel}>← Cancel</Text>
+            <Pressable
+              style={[styles.closeButton, styles.closeRow]}
+              onPress={() => router.back()}
+            >
+              <Ionicons name="arrow-back" size={15} color={Brand.navyDeep} />
+              <Text style={styles.closeLabel}>Cancel</Text>
             </Pressable>
           </View>
 
@@ -283,11 +288,12 @@ export default function AddressCaptureScreen() {
             </View>
           ) : (
             <Pressable
-              style={styles.relocate}
+              style={[styles.relocate, styles.relocateRow]}
               onPress={() => void locate()}
               disabled={busy}
             >
-              <Text style={styles.relocateLabel}>↻ Use my current location</Text>
+              <Ionicons name="locate" size={14} color={Brand.gold} />
+              <Text style={styles.relocateLabel}>Use my current location</Text>
             </Pressable>
           )}
 
@@ -333,6 +339,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.two,
     paddingVertical: Spacing.two,
   },
+  closeRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
   closeLabel: { color: Brand.navyDeep, fontSize: 15, fontWeight: '600' },
   eyebrow: {
     fontSize: 11,
@@ -413,6 +420,7 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.two,
     marginTop: Spacing.two,
   },
+  relocateRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
   relocateLabel: { fontSize: 14, color: Brand.gold, fontWeight: '600' },
   coords: {
     fontSize: 12,

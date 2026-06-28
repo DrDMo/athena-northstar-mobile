@@ -20,6 +20,7 @@ import {
 } from 'expo-router';
 import { useEffect } from 'react';
 import { useColorScheme } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import {
@@ -107,19 +108,25 @@ export default function RootLayout() {
   if (!ready || !fontsLoaded) return null;
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
-      <Stack
-        screenOptions={{
-          headerStyle: { backgroundColor: Brand.cream },
-          headerTintColor: Brand.navyDeep,
-          headerTitleStyle: { fontWeight: '600' },
-          contentStyle: { backgroundColor: Brand.cream },
-        }}
-      >
-        <Stack.Screen name="(authed)" options={{ headerShown: false }} />
-        <Stack.Screen name="login" options={{ headerShown: false }} />
-      </Stack>
-    </ThemeProvider>
+    // #518: wrap the whole tree in GestureHandlerRootView so gestures
+    // (e.g. the sketch canvas pan) are reliable on the New Architecture.
+    // This is the recommended single-root pattern; per-screen wrappers
+    // still work but nesting one here makes gestures work everywhere.
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+        <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
+        <Stack
+          screenOptions={{
+            headerStyle: { backgroundColor: Brand.cream },
+            headerTintColor: Brand.navyDeep,
+            headerTitleStyle: { fontWeight: '600' },
+            contentStyle: { backgroundColor: Brand.cream },
+          }}
+        >
+          <Stack.Screen name="(authed)" options={{ headerShown: false }} />
+          <Stack.Screen name="login" options={{ headerShown: false }} />
+        </Stack>
+      </ThemeProvider>
+    </GestureHandlerRootView>
   );
 }

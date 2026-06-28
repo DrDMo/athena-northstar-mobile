@@ -7,20 +7,31 @@
  * relative-time string. Import from `@/lib/captureLabels`.
  */
 
+import type { Ionicons } from '@expo/vector-icons';
+import type { ComponentProps } from 'react';
+
 import type { CaptureSummary } from './api';
 
-/** Emoji glyph stand-in for a capture kind (used when there's no thumb). */
-export function iconFor(kind: CaptureSummary['kind']): string {
+/**
+ * Ionicons glyph name for a capture kind (used when there's no thumb).
+ *
+ * #517: was an emoji stand-in (🎙/✏️/📝/📷), which rendered as tofu
+ * boxes on Android with no system emoji font. Now returns an Ionicons
+ * name the caller renders with `<Ionicons name={iconFor(kind)} … />`.
+ */
+export function iconFor(
+  kind: CaptureSummary['kind'],
+): ComponentProps<typeof Ionicons>['name'] {
   switch (kind) {
     case 'voice_note':
-      return '🎙';
+      return 'mic';
     case 'sketch':
-      return '✏️';
+      return 'pencil';
     case 'text_note':
-      return '📝';
+      return 'document-text';
     case 'photo':
     default:
-      return '📷';
+      return 'camera';
   }
 }
 
