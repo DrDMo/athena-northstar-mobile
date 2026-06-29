@@ -10,6 +10,7 @@
  * signed in.
  */
 
+import { Ionicons } from '@expo/vector-icons';
 import {
   DarkTheme,
   DefaultTheme,
@@ -51,6 +52,10 @@ export default function RootLayout() {
   // fonts AND auth have resolved; otherwise the wordmark would
   // re-render at first paint (visible "font swap" flash).
   const [fontsLoaded] = useFonts({
+    // #517: @expo/vector-icons isn't auto-loading its font in this
+    // build, so icons render as tofu boxes. Load Ionicons.ttf
+    // explicitly here, gated by the same splash hold below.
+    ...Ionicons.font,
     PlayfairDisplay_400Regular,
     PlayfairDisplay_500Medium,
     PlayfairDisplay_600SemiBold,

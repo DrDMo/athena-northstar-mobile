@@ -18,7 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -49,6 +49,15 @@ export default function MlsScanScreen() {
   // Lock so a barcode held in frame fires onBarcodeScanned once, not
   // every camera frame.
   const handled = useRef(false);
+
+  // Auto-request the camera permission on mount so the Android system
+  // prompt appears directly instead of the "Camera access needed"
+  // fallback. Mirrors voice-capture's mount-time permission request.
+  useEffect(() => {
+    if (permission && !permission.granted && permission.canAskAgain) {
+      void requestPermission();
+    }
+  }, [permission, requestPermission]);
 
   const onBarcodeScanned = useCallback(
     async ({ data }: { data: string }) => {
@@ -140,7 +149,14 @@ export default function MlsScanScreen() {
               <Text style={styles.permButtonLabel}>Allow camera</Text>
             </Pressable>
           ) : (
-            <Pressable style={styles.permButton} onPress={() => Linking.openSettings()}>
+            <Pressable
+              style={styles.permButton}
+              onPress={async () => {
+                try {
+                  await Linking.openSettings();
+                } catch {}
+              }}
+            >
               <Text style={styles.permButtonLabel}>Open Settings</Text>
             </Pressable>
           )}
