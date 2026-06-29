@@ -24,7 +24,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -53,6 +53,15 @@ export default function PhotoCaptureScreen() {
   const [busy, setBusy] = useState(false);
   const [captures, setCaptures] = useState<CaptureMeta[]>([]);
   const [locationDenied, setLocationDenied] = useState(false);
+
+  // Auto-request the camera permission on mount so the Android system
+  // prompt appears directly instead of the "Camera access needed"
+  // fallback. Mirrors voice-capture's mount-time permission request.
+  useEffect(() => {
+    if (permission && !permission.granted && permission.canAskAgain) {
+      void requestPermission();
+    }
+  }, [permission, requestPermission]);
 
   const onShutter = useCallback(async () => {
     if (!cameraRef.current || busy) return;
@@ -149,7 +158,11 @@ export default function PhotoCaptureScreen() {
           ) : (
             <Pressable
               style={styles.permButton}
-              onPress={() => Linking.openSettings()}
+              onPress={async () => {
+                try {
+                  await Linking.openSettings();
+                } catch {}
+              }}
             >
               <Text style={styles.permButtonLabel}>Open Settings</Text>
             </Pressable>
