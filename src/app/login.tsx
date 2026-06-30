@@ -17,6 +17,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import Constants from 'expo-constants';
 
 import { Brand, Fonts, Radius, Spacing } from '@/constants/theme';
 import { login } from '@/lib/api';
@@ -65,6 +66,14 @@ export default function LoginScreen() {
           <Text style={styles.descriptor}>Appraisal · Field</Text>
           <View style={styles.goldRule} />
           <Text style={styles.tagline}>Trusted Decision Infrastructure</Text>
+          <View style={styles.buildBadge}>
+            <Text style={styles.buildBadgeText}>
+              BUILD {Constants.nativeAppVersion ??
+                Constants.expoConfig?.version ??
+                '?'}{' · '}
+              {String(Constants.nativeBuildVersion ?? '?')}
+            </Text>
+          </View>
         </View>
 
         <View style={styles.form}>
@@ -161,6 +170,21 @@ const styles = StyleSheet.create({
     color: Brand.inkMuted,
     marginTop: Spacing.three,
     letterSpacing: 0.5,
+  },
+  // A deliberately loud build stamp so it's obvious at a glance which build
+  // is actually installed (reads the NATIVE binary's version, not app.json).
+  buildBadge: {
+    marginTop: Spacing.three,
+    backgroundColor: Brand.gold,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.one,
+    borderRadius: Radius.sm,
+  },
+  buildBadgeText: {
+    color: Brand.navyDeep,
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 1,
   },
   form: {
     backgroundColor: Brand.surface,
