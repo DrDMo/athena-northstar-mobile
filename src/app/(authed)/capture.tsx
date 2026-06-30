@@ -21,10 +21,12 @@
  */
 
 import { useRouter } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, Text, View, Pressable, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Brand, Radius, Spacing } from '@/constants/theme';
+import { getLastSyncStatus, syncNow, type SyncStatus } from '@/lib/sync';
 
 type Tile = {
   key: string;
@@ -51,6 +53,25 @@ const TILES: Tile[] = [
 
 export default function CaptureScreen() {
   const router = useRouter();
+
+  // #516 diagnostic: surface whether captures actually sync. Run a sync when
+  // this hub mounts and show the result + any error on-screen, with a manual
+  // retry — so the upload outcome is visible without device logs.
+  const [sync, setSync] = useState<SyncStatus>(getLastSyncStatus());
+  const [syncing, setSyncing] = useState(false);
+  const runSync = useCallback(async () => {
+    setSyncing(true);
+    try {
+      await syncNow();
+    } finally {
+      setSync(getLastSyncStatus());
+      setSyncing(false);
+    }
+  }, []);
+  useEffect(() => {
+    void runSync();
+  }, [runSync]);
+
   return (
     <SafeAreaView style={styles.flex}>
       <ScrollView contentContainerStyle={styles.scroll}>
@@ -62,6 +83,27 @@ export default function CaptureScreen() {
           audit chain can witness when + where each piece of
           evidence was taken.
         </Text>
+
+        <View style={styles.syncRow}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.syncBtn,
+              (syncing || pressed) && styles.syncBtnPressed,
+            ]}
+            onPress={runSync}
+            disabled={syncing}
+          >
+            <Text style={styles.syncBtnText}>
+              {syncing ? 'Syncing…' : 'Sync now'}
+            </Text>
+          </Pressable>
+          <Text style={styles.syncStatus}>
+            {sync.ranAt
+              ? `Last sync: ${sync.succeeded} sent, ${sync.failed} failed`
+              : 'Not synced yet'}
+            {sync.lastError ? `\n${sync.lastError}` : ''}
+          </Text>
+        </View>
 
         <View style={styles.grid}>
           {TILES.map((t) => (
@@ -116,6 +158,29 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     marginTop: Spacing.three,
     marginBottom: Spacing.five,
+  },
+  syncRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+    marginBottom: Spacing.five,
+  },
+  syncBtn: {
+    backgroundColor: Brand.navyDeep,
+    paddingHorizontal: Spacing.four,
+    paddingVertical: Spacing.three,
+    borderRadius: Radius.sm,
+  },
+  syncBtnPressed: { opacity: 0.7 },
+  syncBtnText: {
+    color: Brand.cream,
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  syncStatus: {
+    flex: 1,
+    fontSize: 12,
+    color: Brand.inkMuted,
   },
   grid: {
     flexDirection: 'row',

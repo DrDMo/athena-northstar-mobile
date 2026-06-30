@@ -38,8 +38,22 @@ export type SyncResult = {
 };
 
 /**
- * Try to upload every pending item. Skips work if already running or
- * if the device reports no internet. Returns counts for UI display.
+ * #516 diagnostic: the outcome of the last `syncNow` run, so the Capture
+ * hub can show it on-screen (we can't read device logs remotely). Lets us
+ * see whether uploads are firing and surface the real error if they fail.
+ */
+export type SyncStatus = SyncResult & {
+  lastError?: string;
+  ranAt?: string;
+};
+let lastStatus: SyncStatus = { attempted: 0, succeeded: 0, failed: 0 };
+export function getLastSyncStatus(): SyncStatus {
+  return lastStatus;
+}
+
+/**
+ * Try to upload every pending item. Skips only if already running.
+ * Returns counts for UI display.
  */
 export async function syncNow(): Promise<SyncResult> {
   if (inFlight) return { attempted: 0, succeeded: 0, failed: 0 };
@@ -48,13 +62,14 @@ export async function syncNow(): Promise<SyncResult> {
   let attempted = 0;
   let succeeded = 0;
   let failed = 0;
+  let lastError: string | undefined;
 
   try {
-    const net = await NetInfo.fetch();
-    if (!net.isConnected || net.isInternetReachable === false) {
-      return { attempted: 0, succeeded: 0, failed: 0 };
-    }
-
+    // #516: do NOT pre-gate on NetInfo. On Android it can report
+    // isInternetReachable=false / isConnected=false even when the app
+    // plainly has connectivity (reads succeed), which silently skipped
+    // every upload. Just attempt — the per-item catch handles a genuine
+    // offline failure and leaves the item queued for the next retry.
     const queue = await loadQueue();
     const pending = pendingItems(queue);
 
@@ -71,6 +86,7 @@ export async function syncNow(): Promise<SyncResult> {
       } catch (e) {
         const msg = (e as Error).message ?? 'unknown error';
         await updateItem(item.id, { status: 'failed', lastError: msg });
+        lastError = msg;
         failed++;
       }
     }
@@ -78,6 +94,13 @@ export async function syncNow(): Promise<SyncResult> {
     inFlight = false;
   }
 
+  lastStatus = {
+    attempted,
+    succeeded,
+    failed,
+    lastError,
+    ranAt: new Date().toISOString(),
+  };
   return { attempted, succeeded, failed };
 }
 
