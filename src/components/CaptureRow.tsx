@@ -14,7 +14,7 @@
  * its long-standing "5m ago · 1.2 MB" display is preserved exactly.
  */
 
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@react-native-vector-icons/ionicons';
 import {
   ActivityIndicator,
   Image,

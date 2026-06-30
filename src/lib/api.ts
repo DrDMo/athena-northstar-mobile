@@ -14,6 +14,8 @@
  */
 
 import Constants from 'expo-constants';
+import * as LegacyFileSystem from 'expo-file-system/legacy';
+
 import { loadSession, saveSession, clearSession } from './session';
 
 const API_BASE: string =
@@ -48,6 +50,44 @@ export async function apiFetch(
     headers.set('x-session-token', session);
   }
   return fetch(url, { ...init, headers });
+}
+
+/**
+ * #516: upload a capture file via expo-file-system's native multipart
+ * uploader. RN 0.85 is New-Architecture-only, and the New Arch rejects
+ * FormData `{uri,...}` file parts with "Unsupported FormDataPart
+ * implementation" — so the old FormData POST never left the device.
+ * `uploadAsync` performs the multipart POST natively (no FormData), so it
+ * is New-Arch-safe.
+ *
+ * `parameters` are sent as sibling multipart text fields; the backend's
+ * `POST /v1/captures` reads `meta` (required), `assignment_id`, and
+ * `workfile_id` exactly that way (bin-server `http/captures.rs`). The file
+ * part is named `file`; its filename is the URI basename — the server
+ * sanitizes + stores it and derives the type from `meta.kind`, so the exact
+ * name doesn't matter.
+ */
+export async function uploadCaptureFile(
+  fileUri: string,
+  mimeType: string,
+  parameters: Record<string, string>,
+): Promise<{ ok: boolean; status: number; body: string }> {
+  const session = await loadSession();
+  const headers: Record<string, string> = {};
+  if (session) headers['x-session-token'] = session;
+  const res = await LegacyFileSystem.uploadAsync(`${API_BASE}/v1/captures`, fileUri, {
+    httpMethod: 'POST',
+    uploadType: LegacyFileSystem.FileSystemUploadType.MULTIPART,
+    fieldName: 'file',
+    mimeType,
+    parameters,
+    headers,
+  });
+  return {
+    ok: res.status >= 200 && res.status < 300,
+    status: res.status,
+    body: res.body,
+  };
 }
 
 // ---------------------------------------------------------------------------

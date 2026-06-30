@@ -3,12 +3,11 @@
     "name": "North Star Appraisal",
     "slug": "northstar-appraisal",
     "owner": "athena-systems",
-    "version": "0.1.5",
+    "version": "0.1.6",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "northstarappraisal",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.athenadecisionsystems.northstar.appraisal",
@@ -84,14 +83,7 @@
           }
         }
       ],
-      [
-        "expo-font",
-        {
-          "fonts": [
-            "./node_modules/@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/Ionicons.ttf"
-          ]
-        }
-      ]
+      "@react-native-vector-icons/ionicons"
     ],
     "experiments": {
       "typedRoutes": true
