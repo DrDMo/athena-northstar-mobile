@@ -28,6 +28,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   FlatList,
   Image,
   Linking,
@@ -48,7 +49,7 @@ type Facing = 'back' | 'front';
 export default function PhotoCaptureScreen() {
   const router = useRouter();
   const cameraRef = useRef<CameraView | null>(null);
-  const [permission, requestPermission] = useCameraPermissions();
+  const [permission, requestPermission, getPermission] = useCameraPermissions();
   const [facing, setFacing] = useState<Facing>('back');
   const [busy, setBusy] = useState(false);
   const [captures, setCaptures] = useState<CaptureMeta[]>([]);
@@ -62,6 +63,36 @@ export default function PhotoCaptureScreen() {
       void requestPermission();
     }
   }, [permission, requestPermission]);
+
+  // #520: re-read the permission whenever the app returns to the
+  // foreground. `useCameraPermissions` caches its value, so a grant the
+  // user makes in the OS Settings app is otherwise never picked up — the
+  // screen stays on "denied" and Settings looks like it "did nothing".
+  // `getPermission` reads the live status WITHOUT prompting.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active' && getPermission) void getPermission();
+    });
+    return () => sub.remove();
+  }, [getPermission]);
+
+  // #520: single recovery action. Try the in-app prompt first; only if the
+  // OS has locked re-prompting (canAskAgain === false) do we hand off to
+  // Settings — so the user never has to find Settings on their own in the
+  // common case, and is never stuck in the rare one.
+  const requestOrSettings = useCallback(async () => {
+    const res = await requestPermission();
+    if (!res.granted && !res.canAskAgain) {
+      try {
+        await Linking.openSettings();
+      } catch {
+        Alert.alert(
+          'Enable camera',
+          'Open Settings → Apps → North Star → Permissions → Camera, allow it, then come back to this screen.',
+        );
+      }
+    }
+  }, [requestPermission]);
 
   const onShutter = useCallback(async () => {
     if (!cameraRef.current || busy) return;
@@ -142,6 +173,7 @@ export default function PhotoCaptureScreen() {
   }
 
   if (!permission.granted) {
+    const canPrompt = permission.canAskAgain;
     return (
       <SafeAreaView style={styles.flex}>
         <View style={styles.center}>
@@ -151,25 +183,18 @@ export default function PhotoCaptureScreen() {
             photos. Photos stay on this device until you sync them to
             a workfile.
           </Text>
-          {permission.canAskAgain ? (
-            <Pressable style={styles.permButton} onPress={requestPermission}>
-              <Text style={styles.permButtonLabel}>Allow camera</Text>
-            </Pressable>
-          ) : (
-            <Pressable
-              style={styles.permButton}
-              onPress={async () => {
-                try {
-                  await Linking.openSettings();
-                } catch {}
-              }}
-            >
-              <Text style={styles.permButtonLabel}>Open Settings</Text>
-            </Pressable>
-          )}
+          <Pressable style={styles.permButton} onPress={requestOrSettings}>
+            <Text style={styles.permButtonLabel}>
+              {canPrompt ? 'Allow camera access' : 'Open Settings to allow'}
+            </Text>
+          </Pressable>
           <Pressable style={styles.permLater} onPress={() => router.back()}>
             <Text style={styles.permLaterLabel}>Not now</Text>
           </Pressable>
+          <Text style={styles.permDiag}>
+            camera: {permission.status}
+            {canPrompt ? '' : ' · ask-again off'}
+          </Text>
         </View>
       </SafeAreaView>
     );
@@ -353,4 +378,10 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.two,
   },
   permLaterLabel: { color: Brand.inkMuted, fontSize: 13 },
+  permDiag: {
+    marginTop: Spacing.four,
+    color: Brand.inkFaint,
+    fontSize: 11,
+    fontFamily: 'monospace',
+  },
 });
