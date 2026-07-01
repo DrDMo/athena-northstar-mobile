@@ -22,27 +22,20 @@ import Constants from 'expo-constants';
 import { Brand, Radius, Spacing } from '@/constants/theme';
 import { fetchMe, logout, type AuthMe } from '@/lib/api';
 import { clearAuth } from '@/lib/auth-store';
-import type { CaptureMeta } from '@/lib/capture';
-import { loadQueue } from '@/lib/queue';
-import { syncNow } from '@/lib/sync';
 
 export default function SettingsScreen() {
   const router = useRouter();
   const [me, setMe] = useState<AuthMe | null>(null);
   const [loading, setLoading] = useState(true);
-  const [queue, setQueue] = useState<CaptureMeta[]>([]);
-  const [syncing, setSyncing] = useState(false);
-  const [lastSync, setLastSync] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
       (async () => {
         try {
-          const [got, q] = await Promise.all([fetchMe(), loadQueue()]);
+          const got = await fetchMe();
           if (cancelled) return;
           setMe(got);
-          setQueue(q);
         } finally {
           if (!cancelled) setLoading(false);
         }
@@ -52,27 +45,6 @@ export default function SettingsScreen() {
       };
     }, []),
   );
-
-  const onSyncNow = useCallback(async () => {
-    setSyncing(true);
-    try {
-      const result = await syncNow();
-      const fresh = await loadQueue();
-      setQueue(fresh);
-      setLastSync(
-        result.attempted === 0
-          ? 'No items to sync'
-          : `${result.succeeded} synced · ${result.failed} failed`,
-      );
-    } finally {
-      setSyncing(false);
-    }
-  }, []);
-
-  const pendingCount = queue.filter(
-    (c) => c.status === 'pending' || c.status === 'failed',
-  ).length;
-  const syncedCount = queue.filter((c) => c.status === 'synced').length;
 
   function onSignOut() {
     Alert.alert(
@@ -116,24 +88,6 @@ export default function SettingsScreen() {
           {me?.display_name ? (
             <Row label="Display name" value={me.display_name} />
           ) : null}
-        </View>
-
-        <Text style={styles.eyebrow}>CAPTURE QUEUE</Text>
-        <View style={styles.card}>
-          <Row label="Pending upload" value={String(pendingCount)} />
-          <Row label="Synced" value={String(syncedCount)} />
-          {lastSync ? <Row label="Last attempt" value={lastSync} /> : null}
-          <Pressable
-            style={[styles.syncButton, syncing && styles.syncButtonBusy]}
-            onPress={onSyncNow}
-            disabled={syncing}
-          >
-            {syncing ? (
-              <ActivityIndicator color={Brand.cream} />
-            ) : (
-              <Text style={styles.syncButtonLabel}>Sync now</Text>
-            )}
-          </Pressable>
         </View>
 
         <Pressable style={styles.signOut} onPress={onSignOut}>
@@ -206,15 +160,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   signOutLabel: { color: Brand.red, fontWeight: '600' },
-  syncButton: {
-    marginTop: Spacing.three,
-    backgroundColor: Brand.navyDeep,
-    paddingVertical: Spacing.three,
-    borderRadius: Radius.sm,
-    alignItems: 'center',
-  },
-  syncButtonBusy: { opacity: 0.6 },
-  syncButtonLabel: { color: Brand.cream, fontWeight: '600' },
   aboutBlock: {
     marginTop: Spacing.five,
   },
