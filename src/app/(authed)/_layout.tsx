@@ -1,11 +1,13 @@
 /**
- * Authed-group tab layout. Three primary destinations:
+ * Authed-group tab layout. Five primary destinations:
  *
- *   Assignments  — list of cases this appraiser is working on
- *   Capture       — quick action surface: take a photo, voice note,
- *                  start a workfile, etc. Designed for the
- *                  one-handed in-the-field workflow.
- *   Settings     — account info + sign out
+ *   Assignments — list of cases this appraiser is working on
+ *   Capture     — quick action surface: take a photo, voice note,
+ *                 start a workfile, etc. Designed for the one-handed
+ *                 in-the-field workflow.
+ *   Inbox       — synced field captures waiting to be filed
+ *   Reference   — rule / reference lookups
+ *   Settings    — account info + sign out
  *
  * Sits inside the (authed) folder so the root layout's auth gate
  * runs first. If we land here without a session, the gate
@@ -13,6 +15,8 @@
  */
 
 import { Tabs } from 'expo-router';
+import { Ionicons } from '@react-native-vector-icons/ionicons/static';
+
 import { Brand, Fonts } from '@/constants/theme';
 
 export default function AuthedLayout() {
@@ -38,6 +42,9 @@ export default function AuthedLayout() {
         options={{
           title: 'Assignments',
           tabBarLabel: 'Assignments',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="briefcase-outline" size={size} color={color} />
+          ),
         }}
       />
       <Tabs.Screen
@@ -45,6 +52,9 @@ export default function AuthedLayout() {
         options={{
           title: 'Capture',
           tabBarLabel: 'Capture',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="camera-outline" size={size} color={color} />
+          ),
         }}
       />
       <Tabs.Screen
@@ -52,6 +62,9 @@ export default function AuthedLayout() {
         options={{
           title: 'Inbox',
           tabBarLabel: 'Inbox',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="file-tray-outline" size={size} color={color} />
+          ),
         }}
       />
       <Tabs.Screen
@@ -59,6 +72,9 @@ export default function AuthedLayout() {
         options={{
           title: 'Reference',
           tabBarLabel: 'Reference',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="book-outline" size={size} color={color} />
+          ),
         }}
       />
       <Tabs.Screen
@@ -66,6 +82,9 @@ export default function AuthedLayout() {
         options={{
           title: 'Settings',
           tabBarLabel: 'Settings',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="settings-outline" size={size} color={color} />
+          ),
         }}
       />
       {/* Hidden from the tab bar — routed to from Capture tiles. */}
