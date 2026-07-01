@@ -35,7 +35,7 @@
  * durable record regardless.
  */
 
-import { Ionicons } from '@react-native-vector-icons/ionicons';
+import { Ionicons } from '@react-native-vector-icons/ionicons/static';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';

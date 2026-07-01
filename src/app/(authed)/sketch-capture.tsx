@@ -27,7 +27,7 @@
  * last stroke) and Clear (drop all strokes).
  */
 
-import { Ionicons } from '@react-native-vector-icons/ionicons';
+import { Ionicons } from '@react-native-vector-icons/ionicons/static';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';

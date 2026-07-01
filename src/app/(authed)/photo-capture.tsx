@@ -20,7 +20,7 @@
  *     always add address metadata later.
  */
 
-import { Ionicons } from '@react-native-vector-icons/ionicons';
+import { Ionicons } from '@react-native-vector-icons/ionicons/static';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
