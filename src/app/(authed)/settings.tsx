@@ -98,6 +98,9 @@ export default function SettingsScreen() {
           <Text style={styles.aboutTitle}>About</Text>
           <Text style={styles.aboutBody}>
             North Star Appraisal, v{Constants.expoConfig?.version ?? '0.1.0'}
+            {Constants.nativeBuildVersion
+              ? ` (build ${Constants.nativeBuildVersion})`
+              : ''}
             {'\n'}
             Athena Systems · athenadecisionsystems.com
             {'\n'}
