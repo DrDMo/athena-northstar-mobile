@@ -25,7 +25,7 @@
 
 import NetInfo from '@react-native-community/netinfo';
 
-import { apiFetch } from './api';
+import { uploadCaptureFile } from './api';
 import type { CaptureMeta } from './capture';
 import { loadQueue, pendingItems, updateItem } from './queue';
 
@@ -38,8 +38,22 @@ export type SyncResult = {
 };
 
 /**
- * Try to upload every pending item. Skips work if already running or
- * if the device reports no internet. Returns counts for UI display.
+ * #516 diagnostic: the outcome of the last `syncNow` run, so the Capture
+ * hub can show it on-screen (we can't read device logs remotely). Lets us
+ * see whether uploads are firing and surface the real error if they fail.
+ */
+export type SyncStatus = SyncResult & {
+  lastError?: string;
+  ranAt?: string;
+};
+let lastStatus: SyncStatus = { attempted: 0, succeeded: 0, failed: 0 };
+export function getLastSyncStatus(): SyncStatus {
+  return lastStatus;
+}
+
+/**
+ * Try to upload every pending item. Skips only if already running.
+ * Returns counts for UI display.
  */
 export async function syncNow(): Promise<SyncResult> {
   if (inFlight) return { attempted: 0, succeeded: 0, failed: 0 };
@@ -48,13 +62,14 @@ export async function syncNow(): Promise<SyncResult> {
   let attempted = 0;
   let succeeded = 0;
   let failed = 0;
+  let lastError: string | undefined;
 
   try {
-    const net = await NetInfo.fetch();
-    if (!net.isConnected || net.isInternetReachable === false) {
-      return { attempted: 0, succeeded: 0, failed: 0 };
-    }
-
+    // #516: do NOT pre-gate on NetInfo. On Android it can report
+    // isInternetReachable=false / isConnected=false even when the app
+    // plainly has connectivity (reads succeed), which silently skipped
+    // every upload. Just attempt — the per-item catch handles a genuine
+    // offline failure and leaves the item queued for the next retry.
     const queue = await loadQueue();
     const pending = pendingItems(queue);
 
@@ -71,6 +86,7 @@ export async function syncNow(): Promise<SyncResult> {
       } catch (e) {
         const msg = (e as Error).message ?? 'unknown error';
         await updateItem(item.id, { status: 'failed', lastError: msg });
+        lastError = msg;
         failed++;
       }
     }
@@ -78,6 +94,13 @@ export async function syncNow(): Promise<SyncResult> {
     inFlight = false;
   }
 
+  lastStatus = {
+    attempted,
+    succeeded,
+    failed,
+    lastError,
+    ranAt: new Date().toISOString(),
+  };
   return { attempted, succeeded, failed };
 }
 
@@ -138,29 +161,21 @@ function uploadPartFor(item: CaptureMeta): { ext: string; type: string } {
 }
 
 async function uploadOne(item: CaptureMeta): Promise<void> {
-  // React Native FormData supports the {uri, name, type} blob shape
-  // for file uploads, which is what expo-camera writes. No need to
-  // read the file into JS first.
-  const form = new FormData();
+  // #516: upload via the native multipart uploader (expo-file-system),
+  // NOT RN FormData. RN 0.85 is New-Architecture-only, and the New Arch
+  // rejects FormData `{uri,...}` parts with "Unsupported FormDataPart
+  // implementation", so the POST never left the device. See
+  // api.ts::uploadCaptureFile.
 
-  // Derive the filename + content-type from the real recording so
-  // voice notes upload as audio, not a mislabeled JPEG.
-  const { ext, type } = uploadPartFor(item);
+  // Derive the content-type from the real recording so voice notes upload
+  // as audio, not a mislabeled JPEG. (The filename is the URI basename;
+  // the server derives type from meta.kind, so only the mime matters here.)
+  const { type } = uploadPartFor(item);
 
-  // The cast is required because RN's FormData typings don't match
-  // the W3C spec; the runtime accepts {uri,name,type}.
-  form.append(
-    'file',
-    {
-      uri: item.localUri,
-      name: `${item.id}.${ext}`,
-      type,
-    } as unknown as Blob,
-  );
-
-  form.append(
-    'meta',
-    JSON.stringify({
+  const parameters: Record<string, string> = {
+    // The backend requires a `meta` JSON field — client_id drives upload
+    // idempotency and kind must be a known capture kind.
+    meta: JSON.stringify({
       client_id: item.id,
       captured_at: item.capturedAt,
       kind: item.kind,
@@ -168,23 +183,16 @@ async function uploadOne(item: CaptureMeta): Promise<void> {
       exif: item.exif,
       caption: item.caption,
     }),
-  );
+  };
+  if (item.assignmentId) parameters.assignment_id = item.assignmentId;
+  if (item.workfileId) parameters.workfile_id = item.workfileId;
 
-  if (item.assignmentId) form.append('assignment_id', item.assignmentId);
-  if (item.workfileId) form.append('workfile_id', item.workfileId);
-
-  const res = await apiFetch('/v1/captures', {
-    method: 'POST',
-    body: form,
-    // DON'T set content-type; the platform fetch adds the multipart
-    // boundary automatically. Forcing it here drops the boundary and
-    // the server fails to parse.
-  });
+  const res = await uploadCaptureFile(item.localUri, type, parameters);
 
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
     try {
-      const body = (await res.json()) as { message?: string };
+      const body = JSON.parse(res.body) as { message?: string };
       if (body?.message) detail = body.message;
     } catch {
       // body wasn't JSON — keep the HTTP status as the error

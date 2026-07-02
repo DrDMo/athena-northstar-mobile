@@ -7,7 +7,7 @@
  * relative-time string. Import from `@/lib/captureLabels`.
  */
 
-import type { Ionicons } from '@expo/vector-icons';
+import type { Ionicons } from '@react-native-vector-icons/ionicons/static';
 import type { ComponentProps } from 'react';
 
 import type { CaptureSummary } from './api';

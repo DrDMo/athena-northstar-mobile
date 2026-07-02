@@ -10,7 +10,6 @@
  * signed in.
  */
 
-import { Ionicons } from '@expo/vector-icons';
 import {
   DarkTheme,
   DefaultTheme,
@@ -52,10 +51,10 @@ export default function RootLayout() {
   // fonts AND auth have resolved; otherwise the wordmark would
   // re-render at first paint (visible "font swap" flash).
   const [fontsLoaded] = useFonts({
-    // #517: @expo/vector-icons isn't auto-loading its font in this
-    // build, so icons render as tofu boxes. Load Ionicons.ttf
-    // explicitly here, gated by the same splash hold below.
-    ...Ionicons.font,
+    // Playfair Display for the wordmark / serif headings. (#517: Ionicons
+    // is now bundled natively by the @react-native-vector-icons/ionicons
+    // config plugin, so no runtime font load is needed for icons — the old
+    // @expo/vector-icons runtime load did not work on the New Architecture.)
     PlayfairDisplay_400Regular,
     PlayfairDisplay_500Medium,
     PlayfairDisplay_600SemiBold,

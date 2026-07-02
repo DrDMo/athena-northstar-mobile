@@ -16,7 +16,7 @@
  * photo capture screen.
  */
 
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from '@react-native-vector-icons/ionicons/static';
 import {
   AudioModule,
   RecordingPresets,

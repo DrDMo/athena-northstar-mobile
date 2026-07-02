@@ -20,11 +20,15 @@
  * hand. Big tap targets, voice-first where possible.
  */
 
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
 import { StyleSheet, Text, View, Pressable, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Brand, Radius, Spacing } from '@/constants/theme';
+import type { CaptureMeta } from '@/lib/capture';
+import { loadQueue } from '@/lib/queue';
+import { getLastSyncStatus, syncNow, type SyncStatus } from '@/lib/sync';
 
 type Tile = {
   key: string;
@@ -51,6 +55,40 @@ const TILES: Tile[] = [
 
 export default function CaptureScreen() {
   const router = useRouter();
+
+  // #543: the Capture Queue lives here on the Capture tab (moved out of
+  // Settings) — this is where captures happen, so the pending/synced counts
+  // and the manual "Sync now" belong front-and-center. Also surfaces the last
+  // sync outcome + any error, so an upload failure is visible without logs.
+  const [sync, setSync] = useState<SyncStatus>(getLastSyncStatus());
+  const [syncing, setSyncing] = useState(false);
+  const [queue, setQueue] = useState<CaptureMeta[]>([]);
+
+  const runSync = useCallback(async () => {
+    setSyncing(true);
+    try {
+      await syncNow();
+    } finally {
+      setSync(getLastSyncStatus());
+      setQueue(await loadQueue());
+      setSyncing(false);
+    }
+  }, []);
+
+  // Refresh counts and kick a sync each time the tab regains focus: a new
+  // capture may have been added since we were last here, and returning with
+  // signal should push anything still pending. syncNow guards re-entry.
+  useFocusEffect(
+    useCallback(() => {
+      void runSync();
+    }, [runSync]),
+  );
+
+  const pendingCount = queue.filter(
+    (c) => c.status === 'pending' || c.status === 'failed',
+  ).length;
+  const syncedCount = queue.filter((c) => c.status === 'synced').length;
+
   return (
     <SafeAreaView style={styles.flex}>
       <ScrollView contentContainerStyle={styles.scroll}>
@@ -62,6 +100,41 @@ export default function CaptureScreen() {
           audit chain can witness when + where each piece of
           evidence was taken.
         </Text>
+
+        <Text style={styles.queueEyebrow}>CAPTURE QUEUE</Text>
+        <View style={styles.queueCard}>
+          <View style={styles.queueRow}>
+            <Text style={styles.queueLabel}>Waiting to upload</Text>
+            <Text style={styles.queueValue}>{pendingCount}</Text>
+          </View>
+          <View style={styles.queueRow}>
+            <Text style={styles.queueLabel}>Synced</Text>
+            <Text style={styles.queueValue}>{syncedCount}</Text>
+          </View>
+          {sync.ranAt ? (
+            <View style={styles.queueRow}>
+              <Text style={styles.queueLabel}>Last sync</Text>
+              <Text style={styles.queueValue}>
+                {sync.succeeded} sent · {sync.failed} failed
+              </Text>
+            </View>
+          ) : null}
+          {sync.lastError ? (
+            <Text style={styles.queueError}>{sync.lastError}</Text>
+          ) : null}
+          <Pressable
+            style={({ pressed }) => [
+              styles.syncBtn,
+              (syncing || pressed) && styles.syncBtnPressed,
+            ]}
+            onPress={runSync}
+            disabled={syncing}
+          >
+            <Text style={styles.syncBtnText}>
+              {syncing ? 'Syncing…' : 'Sync now'}
+            </Text>
+          </Pressable>
+        </View>
 
         <View style={styles.grid}>
           {TILES.map((t) => (
@@ -116,6 +189,47 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     marginTop: Spacing.three,
     marginBottom: Spacing.five,
+  },
+  queueEyebrow: {
+    fontSize: 11,
+    letterSpacing: 2,
+    fontWeight: '700',
+    color: Brand.gold,
+    marginBottom: Spacing.two,
+  },
+  queueCard: {
+    backgroundColor: Brand.surface,
+    padding: Spacing.four,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Brand.border,
+    gap: Spacing.two,
+    marginBottom: Spacing.five,
+  },
+  queueRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  queueLabel: { color: Brand.inkMuted, fontSize: 13 },
+  queueValue: { color: Brand.ink, fontSize: 13, fontWeight: '600' },
+  queueError: {
+    color: Brand.red,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  syncBtn: {
+    marginTop: Spacing.two,
+    backgroundColor: Brand.navyDeep,
+    paddingVertical: Spacing.three,
+    borderRadius: Radius.sm,
+    alignItems: 'center',
+  },
+  syncBtnPressed: { opacity: 0.7 },
+  syncBtnText: {
+    color: Brand.cream,
+    fontWeight: '700',
+    fontSize: 13,
   },
   grid: {
     flexDirection: 'row',
