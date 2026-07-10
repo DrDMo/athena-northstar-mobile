@@ -107,14 +107,63 @@ export type AuthMe = {
 };
 
 /**
- * Log in by posting credentials. Captures the session token from
- * Set-Cookie and saves it via SecureStore so subsequent calls are
- * authenticated automatically.
+ * What a password login can produce (#593).
+ *
+ * A discriminated union rather than a bare `AuthMe`, because an MFA-enabled
+ * account gets `200 { code: "mfa_required", … }` with **no session token**.
+ * Typing that as `AuthMe` is exactly what let the old code call `setAuth()`
+ * on a challenge body: the app looked signed in while every authed call
+ * 401'd. The caller can no longer reach a user object without a session.
+ */
+export type LoginResult =
+  | { kind: 'session'; me: AuthMe }
+  | { kind: 'mfa_required'; mfaChallengeToken: string };
+
+/** Body of the `mfa_required` response — no session, just the challenge. */
+type MfaRequiredBody = {
+  code?: string;
+  mfa_challenge_token?: string;
+};
+
+/**
+ * Persist whichever session token the response carried.
+ *
+ * #380: React Native (especially Android) does NOT expose the `Set-Cookie`
+ * response header to JS, so reading the token from it silently failed and
+ * the session was never stored — login "succeeded" then bounced straight
+ * back. The backend also returns the raw token in the body; read it there.
+ * Keep the Set-Cookie path as a web fallback.
+ *
+ * Returns true only when a token was actually stored.
+ */
+async function storeSessionFrom(res: Response, body: AuthMe): Promise<boolean> {
+  if (body.session_token) {
+    await saveSession(body.session_token);
+    return true;
+  }
+  const setCookie =
+    res.headers.get('set-cookie') ?? res.headers.get('Set-Cookie');
+  const match = setCookie?.match(/session=([^;]+)/);
+  if (match?.[1]) {
+    await saveSession(match[1]);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Log in by posting credentials.
+ *
+ * On success the session token is persisted via SecureStore so subsequent
+ * calls are authenticated automatically. When the account has two-factor
+ * turned on, the server answers `200 { code: "mfa_required" }` with no
+ * token — that is not a session, and this returns a challenge for
+ * {@link verifyMfa} to exchange.
  */
 export async function login(input: {
   email: string;
   password: string;
-}): Promise<AuthMe> {
+}): Promise<LoginResult> {
   const res = await fetch(`${API_BASE}/v1/auth/sessions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -124,21 +173,55 @@ export async function login(input: {
     const body = await res.json().catch(() => ({ message: 'login failed' }));
     throw new Error(body.message ?? `login failed (${res.status})`);
   }
-  // #380: React Native (especially Android) does NOT expose the
-  // `Set-Cookie` response header to JS, so reading the token from it
-  // silently failed and the session was never stored — login "succeeded"
-  // then bounced straight back. The backend now also returns the raw token
-  // in the body; read it there. Keep the Set-Cookie path as a web fallback.
-  const body = (await res.json()) as AuthMe;
-  if (body.session_token) {
-    await saveSession(body.session_token);
-  } else {
-    const setCookie =
-      res.headers.get('set-cookie') ?? res.headers.get('Set-Cookie');
-    const match = setCookie?.match(/session=([^;]+)/);
-    if (match?.[1]) await saveSession(match[1]);
+
+  const raw = (await res.json()) as AuthMe & MfaRequiredBody;
+  if (raw.code === 'mfa_required') {
+    if (!raw.mfa_challenge_token) {
+      throw new Error('This account needs a code, but the server sent none.');
+    }
+    return { kind: 'mfa_required', mfaChallengeToken: raw.mfa_challenge_token };
   }
-  return body;
+
+  if (!(await storeSessionFrom(res, raw))) {
+    // Never hand back a user we cannot authenticate as. Failing loudly here
+    // is the whole point of #593 — a silent "signed in" with no token left
+    // the app in a state where every request 401'd.
+    throw new Error('Signed in, but no session was returned. Try again.');
+  }
+  return { kind: 'session', me: raw };
+}
+
+/**
+ * Second step of a two-factor login: exchange the challenge plus a 6-digit
+ * authenticator code (or a one-time backup code) for a real session.
+ *
+ * The server rejects a spent, expired, or over-attempted challenge with 401,
+ * and a locked-out account with 429.
+ */
+export async function verifyMfa(input: {
+  mfaChallengeToken: string;
+  code: string;
+}): Promise<AuthMe> {
+  const res = await fetch(`${API_BASE}/v1/auth/sessions/verify-mfa`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      mfa_challenge_token: input.mfaChallengeToken,
+      code: input.code,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res
+      .json()
+      .catch(() => ({ message: 'verification failed' }));
+    throw new Error(body.message ?? `verification failed (${res.status})`);
+  }
+
+  const me = (await res.json()) as AuthMe;
+  if (!(await storeSessionFrom(res, me))) {
+    throw new Error('Code accepted, but no session was returned. Try again.');
+  }
+  return me;
 }
 
 export async function logout(): Promise<void> {
