@@ -2,6 +2,12 @@
  * Login screen. POSTs to /v1/auth/sessions; on success the API
  * client persists the session cookie via expo-secure-store and
  * the root layout's auth-gate routes us into the (authed) group.
+ *
+ * #593: accounts with two-factor turned on get `mfa_required` and no
+ * session token. The screen swaps to a code entry that exchanges the
+ * challenge for a real session. Before this, `login()` was typed as
+ * returning a user, so the app called `setAuth()` on the challenge body,
+ * appeared signed in, and then 401'd on every request.
  */
 
 import { useRouter } from 'expo-router';
@@ -19,7 +25,7 @@ import {
 } from 'react-native';
 
 import { Brand, Fonts, Radius, Spacing } from '@/constants/theme';
-import { login } from '@/lib/api';
+import { login, verifyMfa } from '@/lib/api';
 import { setAuth } from '@/lib/auth-store';
 
 export default function LoginScreen() {
@@ -27,6 +33,9 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  /** Non-null once the server asks for a second factor (#593). */
+  const [mfaChallenge, setMfaChallenge] = useState<string | null>(null);
+  const [code, setCode] = useState('');
 
   async function onSubmit() {
     if (!email.trim() || !password) {
@@ -38,16 +47,55 @@ export default function LoginScreen() {
     }
     setSubmitting(true);
     try {
+      const result = await login({ email: email.trim(), password });
+      if (result.kind === 'mfa_required') {
+        // The password has done its job. Drop it before the code screen
+        // renders, so nothing there can leak the secret.
+        setPassword('');
+        setMfaChallenge(result.mfaChallengeToken);
+        return;
+      }
       // #514: publish the user to the shared store BEFORE navigating, so the
       // root auth-gate sees the signed-in user and doesn't bounce us back.
-      const me = await login({ email: email.trim(), password });
-      setAuth(me);
+      setAuth(result.me);
       router.replace('/');
     } catch (e) {
       Alert.alert('Sign in failed', (e as Error).message);
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function onSubmitCode() {
+    if (!mfaChallenge) return;
+    const trimmed = code.trim();
+    if (trimmed.length < 6) {
+      Alert.alert(
+        'Enter your code',
+        'Type the 6-digit code from your authenticator app, or one of your backup codes.',
+      );
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const me = await verifyMfa({
+        mfaChallengeToken: mfaChallenge,
+        code: trimmed,
+      });
+      setAuth(me);
+      router.replace('/');
+    } catch (e) {
+      Alert.alert('That code did not work', (e as Error).message);
+      setCode('');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  /** Abandon the challenge and start over from the password. */
+  function backToPassword() {
+    setMfaChallenge(null);
+    setCode('');
   }
 
   return (
@@ -67,6 +115,52 @@ export default function LoginScreen() {
           <Text style={styles.tagline}>Trusted Decision Infrastructure</Text>
         </View>
 
+        {mfaChallenge ? (
+          <View style={styles.form}>
+            <Text style={styles.label}>Authentication code</Text>
+            <Text style={styles.stepHint}>
+              Enter the 6-digit code from your authenticator app. You can
+              also use one of your backup codes.
+            </Text>
+            <TextInput
+              // A fresh field, never the password input reused: React
+              // recycling that node is how the web app briefly showed a
+              // password in clear text (#590).
+              key="mfa-code"
+              style={styles.input}
+              value={code}
+              onChangeText={setCode}
+              placeholder="123456"
+              placeholderTextColor={Brand.inkFaint}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="number-pad"
+              textContentType="oneTimeCode"
+              autoComplete="one-time-code"
+              autoFocus
+              editable={!submitting}
+            />
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.button,
+                (submitting || pressed) && styles.buttonPressed,
+              ]}
+              onPress={onSubmitCode}
+              disabled={submitting}
+            >
+              <Text style={styles.buttonLabel}>
+                {submitting ? 'Verifying…' : 'Verify'}
+              </Text>
+            </Pressable>
+
+            <Pressable onPress={backToPassword} disabled={submitting}>
+              <Text style={[styles.fine, styles.linkish]}>
+                ← Back to sign in
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
         <View style={styles.form}>
           <Text style={styles.label}>Work email</Text>
           <TextInput
@@ -86,6 +180,7 @@ export default function LoginScreen() {
             Password
           </Text>
           <TextInput
+            key="password"
             style={styles.input}
             value={password}
             onChangeText={setPassword}
@@ -114,6 +209,7 @@ export default function LoginScreen() {
             app uses the same account as the web product.
           </Text>
         </View>
+        )}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -203,5 +299,15 @@ const styles = StyleSheet.create({
     color: Brand.inkMuted,
     textAlign: 'center',
     lineHeight: 18,
+  },
+  stepHint: {
+    fontSize: 13,
+    color: Brand.inkMuted,
+    lineHeight: 19,
+    marginBottom: Spacing.three,
+  },
+  linkish: {
+    color: Brand.navyDeep,
+    textDecorationLine: 'underline',
   },
 });
