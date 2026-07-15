@@ -19,6 +19,34 @@ import * as Location from 'expo-location';
 
 export type CaptureKind = 'photo' | 'voice_note' | 'text_note' | 'sketch';
 
+/** Graph-paper grid density on the sketch surface. */
+export type SketchGridSize = 'off' | 'fine' | 'medium' | 'coarse';
+
+/**
+ * Sketch-only capture settings + geo-reference (#655). Present on
+ * `kind: 'sketch'` captures; every field is optional so older sketches,
+ * and every non-sketch kind, stay valid and the sync wire only ever
+ * GAINS keys (see {@link CaptureMeta.sketch}).
+ */
+export type SketchMeta = {
+  /** Graph-paper grid density chosen on the drawing surface. */
+  gridSize?: SketchGridSize;
+  /** Real-world feet represented by one grid square (the drawing scale). */
+  scaleFeetPerSquare?: number;
+  /** Whether stroke points were snapped to grid intersections. */
+  snapEnabled?: boolean;
+  /** One-shot GPS fix the appraiser pinned for the site the sketch depicts. */
+  gps?: {
+    lat: number;
+    lng: number;
+    accuracyMeters?: number;
+    /** ISO timestamp the pin was captured. */
+    capturedAt: string;
+  };
+  /** Compass heading (degrees, 0 = north) of the north arrow at save time. */
+  headingDeg?: number;
+};
+
 export type CaptureMeta = {
   /** Stable client-generated id; sortable by capture time. */
   id: string;
@@ -51,6 +79,13 @@ export type CaptureMeta = {
   /** Which workfile this capture is destined for, if known yet. */
   assignmentId?: string;
   workfileId?: string;
+
+  /**
+   * Sketch-only settings + geo-reference (#655). Only set on
+   * `kind: 'sketch'`; additive + optional, so captures written before
+   * this field existed still load and sync unchanged.
+   */
+  sketch?: SketchMeta;
 
   /** Upload state. Sync layer flips through these. */
   status: 'pending' | 'uploading' | 'synced' | 'failed';
