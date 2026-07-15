@@ -182,6 +182,23 @@ async function uploadOne(item: CaptureMeta): Promise<void> {
       geo: item.geo,
       exif: item.exif,
       caption: item.caption,
+      // #655 additive: sketch-only settings + geo-reference. `undefined`
+      // for every non-sketch capture (and for sketches saved before this
+      // shipped), so JSON.stringify DROPS the key — the wire shape stays
+      // byte-identical to before for photos/voice/text. New optional key
+      // only; nothing existing changed.
+      sketch: item.sketch && {
+        grid_size: item.sketch.gridSize,
+        scale_feet_per_square: item.sketch.scaleFeetPerSquare,
+        snap_enabled: item.sketch.snapEnabled,
+        gps: item.sketch.gps && {
+          lat: item.sketch.gps.lat,
+          lng: item.sketch.gps.lng,
+          accuracy_m: item.sketch.gps.accuracyMeters,
+          captured_at: item.sketch.gps.capturedAt,
+        },
+        heading_deg: item.sketch.headingDeg,
+      },
     }),
   };
   if (item.assignmentId) parameters.assignment_id = item.assignmentId;
