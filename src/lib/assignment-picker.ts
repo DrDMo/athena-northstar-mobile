@@ -13,7 +13,11 @@
 
 import { Alert } from 'react-native';
 
-import { listAssignments, type AssignmentSummary } from './api';
+import {
+  assignmentPickerLabel,
+  listAssignments,
+  type AssignmentSummary,
+} from './api';
 
 /**
  * Present the picker and resolve with the selected assignment id, or
@@ -29,7 +33,7 @@ export function pickAssignment(): Promise<string | null> {
           return;
         }
         const buttons = assignments.slice(0, 8).map((a) => ({
-          text: a.name ?? `${a.jurisdiction ?? a.state} · ${a.id.slice(0, 8)}`,
+          text: assignmentPickerLabel(a),
           onPress: () => resolve(a.id),
         }));
         Alert.alert(

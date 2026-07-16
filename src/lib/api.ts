@@ -278,12 +278,10 @@ export type AssignmentSummary = {
 };
 
 /**
- * #663/#664: a human-readable label for an assignment — never a raw UUID.
- * Mirrors the web (name → subject property address → "Unnamed assignment").
- * Both the list rows and the detail header use this so a nameless draft never
- * surfaces an `id.slice(...)` UUID fragment as its title.
+ * The assignment's real display name — its explicit name, else its subject
+ * property address (from `domain_extension`), else `null` when it has neither.
  */
-export function assignmentLabel(item: AssignmentSummary): string {
+function assignmentDisplayName(item: AssignmentSummary): string | null {
   const name = item.name?.trim();
   if (name) return name;
   const ext = item.domain_extension;
@@ -291,7 +289,32 @@ export function assignmentLabel(item: AssignmentSummary): string {
     const addr = (ext as Record<string, unknown>).property_address;
     if (typeof addr === 'string' && addr.trim().length > 0) return addr.trim();
   }
-  return 'Unnamed assignment';
+  return null;
+}
+
+/**
+ * #663/#664: a human-readable label for an assignment — never a raw UUID.
+ * Mirrors the web (name → subject property address → "Unnamed assignment").
+ * Both the list rows and the detail header use this so a nameless draft never
+ * surfaces an `id.slice(...)` UUID fragment as its title.
+ */
+export function assignmentLabel(item: AssignmentSummary): string {
+  return assignmentDisplayName(item) ?? 'Unnamed assignment';
+}
+
+/**
+ * #665: the label for an assignment inside a picker (the Inbox "File to
+ * assignment" chooser and the capture-time picker). Same comprehensible name,
+ * but a nameless draft is disambiguated by its creation date — never a UUID —
+ * so multiple unnamed drafts stay tellable apart when choosing where to file.
+ */
+export function assignmentPickerLabel(item: AssignmentSummary): string {
+  const name = assignmentDisplayName(item);
+  if (name) return name;
+  const d = new Date(item.created_at);
+  if (Number.isNaN(d.getTime())) return 'Unnamed assignment';
+  const when = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return `Unnamed assignment · ${when}`;
 }
 
 export async function listAssignments(): Promise<AssignmentSummary[]> {
