@@ -198,6 +198,18 @@ async function uploadOne(item: CaptureMeta): Promise<void> {
           captured_at: item.sketch.gps.capturedAt,
         },
         heading_deg: item.sketch.headingDeg,
+        // #666 additive: the editable vector floor-plan doc. `undefined`
+        // for raster-only / older sketches, so JSON.stringify DROPS the
+        // key and the wire stays byte-identical for those. Vertices +
+        // labels are already plain {x,y}/{x,y,text}; only pxPerFoot is
+        // snake-cased to match the rest of the sketch payload.
+        vector: item.sketch.vector && {
+          version: item.sketch.vector.version,
+          px_per_foot: item.sketch.vector.pxPerFoot,
+          vertices: item.sketch.vector.vertices,
+          labels: item.sketch.vector.labels,
+          closed: item.sketch.vector.closed,
+        },
       },
     }),
   };

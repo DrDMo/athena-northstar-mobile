@@ -1,65 +1,56 @@
 /**
- * Sketch capture — a finger / stylus drawing surface that exports to a
- * PNG and queues it like any other capture.
+ * Vector floor-plan editor (#666, SLICE 1) — replaces the old freehand
+ * raster sketch tool. The appraiser now draws a real polyline/polygon
+ * whose vertices, labels, and pxPerFoot calibration are kept as DATA
+ * (`SketchDoc`), so segment lengths + enclosed area are computed exactly
+ * and the sketch is re-editable later. The old tool rasterized to a PNG
+ * and threw the geometry away — you couldn't measure or edit it.
  *
- * Drawing + export path (all SDK 56-compatible; verified against the
- * versioned docs at https://docs.expo.dev/versions/v56.0.0/):
+ * What's on the surface:
+ *   - Draw mode: TAP the canvas to drop the next vertex, connected to
+ *     the last (a continuous wall). Snap-to-grid (existing toggle) snaps
+ *     added vertices to grid intersections.
+ *   - Precise entry: a distance field + an 8-direction pad. Type feet,
+ *     tap a SCREEN-relative arrow (up = screen-up, NOT compass north) and
+ *     the next vertex is placed exactly that far away — how appraisers
+ *     pace a perimeter ("20 ft right, 15 ft down…"). Diagonals move the
+ *     entered distance along the hypotenuse (see endpointOffset).
+ *   - Live dimensions: each segment's length renders at its midpoint.
+ *   - Close shape: connect last→first and show the enclosed AREA
+ *     (shoelace) + perimeter — the core measurement.
+ *   - Pan mode: one-finger drag pans, pinch zooms. Taps do NOT add
+ *     vertices. A screen tap in Draw mode is mapped back through the
+ *     pan/zoom transform to canvas (world) coords before placement.
+ *   - Undo (last vertex/label/close, in order) + Clear.
+ *   - Label tool: tap a spot, enter text, drop a floating label.
+ *   - Save in place: rasterize to PNG (react-native-view-shot) + enqueue
+ *     like any capture, AND persist the full SketchDoc on
+ *     meta.sketch.vector so it round-trips. Stays on the canvas.
  *
- *   - TOUCH: react-native-gesture-handler `Gesture.Pan()` inside a
- *     `GestureDetector`. We call `.runOnJS(true)` so the begin/update/end
- *     callbacks run on the JS thread and can `setState` directly — no
- *     reanimated worklet / `runOnJS()` wrapping needed. The root layout
- *     mounts a `GestureHandlerRootView` (#518); this screen also wraps
- *     its own (nesting is harmless) so gestures work regardless.
+ * Grid / scale / snap / GPS-pin / north-arrow controls + the assignment
+ * picker + enqueue/sync save path are carried over from the #655 tool.
  *
- *   - RENDER: react-native-svg. Each stroke is an SVG `<Path>` whose `d`
- *     is built from the captured points (`M x y L x y …`). A graph-paper
- *     grid (`<Line>`s) renders FIRST, so completed strokes plus the
- *     in-progress stroke sit on top, all inside one `<Svg>`.
- *
- *   - EXPORT: react-native-view-shot `captureRef(ref, { format: 'png',
- *     result: 'tmpfile' })` rasterizes the canvas View to a temp PNG and
- *     returns its file URI (the interop table lists react-native-svg as
- *     capturable on iOS + Android). That URI is the capture's local file.
- *
- * #655 enhancements (all additive; the draw/export/sync flow is
- * unchanged for existing captures):
- *
- *   1. Adjustable grid — Off / Fine / Medium / Coarse graph paper behind
- *      the ink. It's part of the rasterized PNG (a helpful background),
- *      never part of stroke data — the `d` strings carry no grid info.
- *   2. Real-world scale — feet-per-grid-square (1 / 2 / 5 ft), shown as
- *      "1 sq = N ft" and stored in the capture meta.
- *   3. Snap-to-grid — snaps each stroke point to the nearest grid
- *      intersection for clean floor-plan walls; off = freehand as before.
- *   4. GPS binding — a "Pin location" button captures the current fix via
- *      the shared `getCurrentGeo` helper (same permission + graceful-deny
- *      path as photo/address capture) and shows a "📍 lat, lng (±N m)"
- *      chip.
- *   5. North arrow — a compass heading from `expo-location`
- *      (`watchHeadingAsync`, no new native module) rotates a small north
- *      arrow on the surface; the heading is recorded in the meta. If the
- *      device has no compass, the arrow just stays hidden.
- *
- * On Save we enqueue a `kind: 'sketch'` capture with the PNG as the
- * `file` part — the exact same offline sync path as a photo
- * (`enqueue` → `syncNow` → `POST /v1/captures`) — plus the grid/scale/
- * snap/gps/heading settings on `meta.sketch` (additive, all optional).
- * Controls: Undo (pop the last stroke) and Clear (drop all strokes).
+ * Coordinate model: vertices live in CANVAS (world) pixels. The SVG
+ * content group is drawn with transform `translate(tx,ty) scale(s)`, so
+ * screen = world*s + t and world = (screen - t)/s. Stroke widths + font
+ * sizes inside the group are divided by `s` so they stay a constant
+ * on-screen size regardless of zoom.
  */
 
 import { Ionicons } from '@react-native-vector-icons/ionicons/static';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   LayoutChangeEvent,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import {
@@ -68,7 +59,7 @@ import {
   GestureHandlerRootView,
 } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Svg, { Line, Path } from 'react-native-svg';
+import Svg, { Circle, G, Line, Path, Text as SvgText } from 'react-native-svg';
 import { captureRef } from 'react-native-view-shot';
 
 import { Brand, Radius, Spacing } from '@/constants/theme';
@@ -80,19 +71,39 @@ import {
   type SketchGridSize,
   type SketchMeta,
 } from '@/lib/capture';
-import { enqueue } from '@/lib/queue';
+import { enqueue, updateItem } from '@/lib/queue';
+import {
+  areaSquareFeet,
+  type Dir8,
+  endpointOffset,
+  perimeterFeet,
+  pxPerFootFromGrid,
+  segments,
+  type SketchDoc,
+  type SketchLabel,
+  type SketchVertex,
+} from '@/lib/sketch-model';
 import { syncNow } from '@/lib/sync';
 
-/** A single point in canvas-local coordinates. */
-type Pt = { x: number; y: number };
+/** Editor interaction mode. */
+type Mode = 'draw' | 'pan' | 'label';
 
-/** On-screen pixel spacing per grid density. 'off' → no grid. */
+/** The pan/zoom transform applied to the SVG content group. */
+type Transform = { tx: number; ty: number; scale: number };
+
+/** One undoable action, newest last — lets Undo remove in insert order. */
+type Action = 'v' | 'l' | 'c'; // vertex | label | close
+
+/** On-screen pixel spacing per grid density. 'off' → no grid drawn. */
 const GRID_SPACING: Record<SketchGridSize, number> = {
   off: 0,
   fine: 16,
   medium: 24,
   coarse: 40,
 };
+
+/** Nominal spacing used to calibrate pxPerFoot when the grid is hidden. */
+const FALLBACK_SPACING = GRID_SPACING.medium;
 
 const GRID_OPTIONS: { label: string; value: SketchGridSize }[] = [
   { label: 'Off', value: 'off' },
@@ -107,53 +118,81 @@ const SCALE_OPTIONS: { label: string; value: number }[] = [
   { label: '5 ft', value: 5 },
 ];
 
+const MODE_OPTIONS: { label: string; value: Mode }[] = [
+  { label: 'Draw', value: 'draw' },
+  { label: 'Pan/Zoom', value: 'pan' },
+  { label: 'Label', value: 'label' },
+];
+
 const STROKE_COLOR = Brand.navyDeep;
 const STROKE_WIDTH = 3;
-/** Subtle graph-paper gray on the white sheet. */
 const GRID_COLOR = '#e2ddcc';
+const FILL_COLOR = 'rgba(15,29,58,0.06)';
+const MIN_SCALE = 0.25;
+const MAX_SCALE = 8;
+/** Cap grid line count when zoomed way out so we never draw thousands. */
+const MAX_GRID_LINES = 400;
+
+/** Screen-relative arrow glyphs for the 8-direction precise-entry pad. */
+const ARROW_GLYPH: Record<Dir8, string> = {
+  up: '↑',
+  'up-right': '↗',
+  right: '→',
+  'down-right': '↘',
+  down: '↓',
+  'down-left': '↙',
+  left: '←',
+  'up-left': '↖',
+};
+
+function clampScale(s: number): number {
+  return Math.max(MIN_SCALE, Math.min(s, MAX_SCALE));
+}
+
+/** SVG path `d` for the polyline; appends `Z` when the shape is closed. */
+function polylineD(verts: SketchVertex[], closed: boolean): string {
+  if (verts.length === 0) return '';
+  let d = `M ${verts[0].x.toFixed(2)} ${verts[0].y.toFixed(2)}`;
+  for (let i = 1; i < verts.length; i++) {
+    d += ` L ${verts[i].x.toFixed(2)} ${verts[i].y.toFixed(2)}`;
+  }
+  if (closed && verts.length >= 3) d += ' Z';
+  return d;
+}
 
 /**
- * Turn a point list into an SVG path `d`. One point renders as a tiny
- * dot (a zero-length line) so a single tap still leaves a mark.
+ * World-space grid lines covering the currently visible region. Grid
+ * lives in WORLD coords (inside the transformed group) so snapping,
+ * vertices, and grid squares all agree under pan/zoom. Count is capped
+ * so zooming far out can't explode the line count.
  */
-function toPathD(points: Pt[]): string {
-  if (points.length === 0) return '';
-  const [first, ...rest] = points;
-  const head = `M ${first.x.toFixed(2)} ${first.y.toFixed(2)}`;
-  if (rest.length === 0) {
-    // Zero-length line → a dot under round linecap.
-    return `${head} L ${first.x.toFixed(2)} ${first.y.toFixed(2)}`;
-  }
-  const tail = rest
-    .map((p) => `L ${p.x.toFixed(2)} ${p.y.toFixed(2)}`)
-    .join(' ');
-  return `${head} ${tail}`;
-}
-
-/** Snap a point to the nearest grid intersection for the given spacing. */
-function snapPoint(p: Pt, spacing: number): Pt {
-  if (spacing <= 0) return p;
-  return {
-    x: Math.round(p.x / spacing) * spacing,
-    y: Math.round(p.y / spacing) * spacing,
-  };
-}
-
-/** Interior grid-line offsets (skip the 0 / edge lines) for a spacing. */
-function gridLines(
+function worldGridLines(
   spacing: number,
+  t: Transform,
   w: number,
   h: number,
 ): { xs: number[]; ys: number[] } {
-  if (spacing <= 0 || w <= 0 || h <= 0) return { xs: [], ys: [] };
+  if (spacing <= 0 || w <= 0 || h <= 0 || t.scale <= 0) return { xs: [], ys: [] };
+  const left = (0 - t.tx) / t.scale;
+  const right = (w - t.tx) / t.scale;
+  const top = (0 - t.ty) / t.scale;
+  const bottom = (h - t.ty) / t.scale;
   const xs: number[] = [];
-  for (let x = spacing; x < w; x += spacing) xs.push(x);
   const ys: number[] = [];
-  for (let y = spacing; y < h; y += spacing) ys.push(y);
+  if ((right - left) / spacing <= MAX_GRID_LINES) {
+    for (let x = Math.floor(left / spacing) * spacing; x <= right; x += spacing) {
+      xs.push(x);
+    }
+  }
+  if ((bottom - top) / spacing <= MAX_GRID_LINES) {
+    for (let y = Math.floor(top / spacing) * spacing; y <= bottom; y += spacing) {
+      ys.push(y);
+    }
+  }
   return { xs, ys };
 }
 
-/** Compact segmented control shared by the grid + scale pickers. */
+/** Compact segmented control shared by the grid / scale / mode pickers. */
 function Segmented<T extends string | number>({
   options,
   value,
@@ -174,10 +213,7 @@ function Segmented<T extends string | number>({
             onPress={() => onChange(o.value)}
           >
             <Text
-              style={[
-                styles.segmentLabel,
-                active && styles.segmentLabelActive,
-              ]}
+              style={[styles.segmentLabel, active && styles.segmentLabelActive]}
             >
               {o.label}
             </Text>
@@ -191,27 +227,45 @@ function Segmented<T extends string | number>({
 export default function SketchCaptureScreen() {
   const router = useRouter();
   const canvasRef = useRef<View>(null);
-  const [strokes, setStrokes] = useState<string[]>([]); // completed paths (d)
-  const [current, setCurrent] = useState<Pt[]>([]); // in-progress points
-  const [busy, setBusy] = useState(false);
-  // Canvas size, measured on layout — drives the grid AND clamps stroke
-  // points inside bounds. State (not a ref) is safe here: the pan gesture
-  // is rebuilt every render, so its closure always sees the latest size.
-  const [size, setSize] = useState({ w: 0, h: 0 });
 
-  // #655 controls.
+  // --- Vector document state ---
+  const [vertices, setVertices] = useState<SketchVertex[]>([]);
+  const [labels, setLabels] = useState<SketchLabel[]>([]);
+  const [closed, setClosed] = useState(false);
+  const [history, setHistory] = useState<Action[]>([]);
+
+  // --- Editor UI state ---
+  const [mode, setMode] = useState<Mode>('draw');
+  const [distanceText, setDistanceText] = useState('');
+  const [transform, setTransform] = useState<Transform>({
+    tx: 0,
+    ty: 0,
+    scale: 1,
+  });
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  const [busy, setBusy] = useState(false);
+  const [saveNote, setSaveNote] = useState<string | null>(null);
+  // Android inline-label draft (iOS uses Alert.prompt).
+  const [labelDraft, setLabelDraft] = useState<{
+    x: number;
+    y: number;
+    text: string;
+  } | null>(null);
+
+  // First save picks the assignment + mints the capture id; later saves
+  // update that same queue item in place (Save stays on the canvas).
+  const savedIdRef = useRef<string | null>(null);
+  const savedAssignmentIdRef = useRef<string | null>(null);
+
+  // --- Carried-over controls (grid / scale / snap / GPS / heading) ---
   const [gridSize, setGridSize] = useState<SketchGridSize>('medium');
   const [scaleFeet, setScaleFeet] = useState<number>(1);
   const [snapEnabled, setSnapEnabled] = useState(false);
-
-  // #655 GPS binding.
   const [pinnedGeo, setPinnedGeo] =
     useState<NonNullable<CaptureMeta['geo']> | null>(null);
   const [pinnedAt, setPinnedAt] = useState<string | null>(null);
   const [pinning, setPinning] = useState(false);
   const [locationNote, setLocationNote] = useState<string | null>(null);
-
-  // #655 north heading (from expo-location; no new native module).
   const [heading, setHeading] = useState<number | null>(null);
   const headingSubRef =
     useRef<Awaited<ReturnType<typeof Location.watchHeadingAsync>> | null>(null);
@@ -219,28 +273,39 @@ export default function SketchCaptureScreen() {
 
   const spacing = GRID_SPACING[gridSize];
   const snapActive = snapEnabled && spacing > 0;
-  const grid = gridLines(spacing, size.w, size.h);
+  // pxPerFoot is always > 0: fall back to a nominal spacing when the grid
+  // is hidden so lengths/area stay computable (scaleFeet is always ≥ 1).
+  const pxPerFoot = pxPerFootFromGrid(
+    spacing > 0 ? spacing : FALLBACK_SPACING,
+    scaleFeet,
+  );
+
+  const doc: SketchDoc = useMemo(
+    () => ({ version: 1, pxPerFoot, vertices, labels, closed }),
+    [pxPerFoot, vertices, labels, closed],
+  );
+  const segs = useMemo(() => segments(doc), [doc]);
+  const perimeter = useMemo(() => perimeterFeet(doc), [doc]);
+  const area = useMemo(() => areaSquareFeet(doc), [doc]);
+  const hasContent = vertices.length > 0 || labels.length > 0;
+
+  const grid = worldGridLines(spacing, transform, size.w, size.h);
 
   const onCanvasLayout = useCallback((e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout;
     setSize({ w: width, h: height });
   }, []);
 
-  // Start (or re-start) the compass watch. Idempotent — a live
-  // subscription short-circuits. Wrapped so a device with no compass (or
-  // location not yet permitted) just leaves the arrow hidden, no crash.
+  // --- Compass heading (carried over from #655) ---
   const startHeading = useCallback(async () => {
     if (headingSubRef.current) return;
     try {
       headingSubRef.current = await Location.watchHeadingAsync((h) => {
-        // trueHeading is -1 until a location fix resolves true north;
-        // fall back to magnetic. Ignore junk readings.
         const deg =
           h.trueHeading != null && h.trueHeading >= 0
             ? h.trueHeading
             : h.magHeading;
         if (typeof deg !== 'number' || Number.isNaN(deg) || deg < 0) return;
-        // Throttle re-renders: only update on a ≥2° change.
         const last = lastHeadingRef.current;
         if (last != null && Math.abs(deg - last) < 2) return;
         lastHeadingRef.current = deg;
@@ -259,74 +324,205 @@ export default function SketchCaptureScreen() {
     };
   }, [startHeading]);
 
-  // Pan gesture. runOnJS(true): callbacks run on the JS thread so we can
-  // call setState directly (no worklet). x/y are local to the attached
-  // view (the canvas), which is exactly the drawing coordinate space.
-  const clamp = (x: number, y: number): Pt => {
-    const { w, h } = size;
-    return {
-      x: w ? Math.max(0, Math.min(x, w)) : x,
-      y: h ? Math.max(0, Math.min(y, h)) : y,
-    };
-  };
-
-  const pan = Gesture.Pan()
-    .runOnJS(true)
-    .minDistance(0)
-    .onBegin((e) => {
-      const p = clamp(e.x, e.y);
-      setCurrent([snapActive ? snapPoint(p, spacing) : p]);
-    })
-    .onUpdate((e) => {
-      const p = clamp(e.x, e.y);
-      const np = snapActive ? snapPoint(p, spacing) : p;
-      setCurrent((prev) => {
-        // When snapping, skip a point identical to the last so snapped
-        // walls stay tidy polylines instead of piling up duplicates.
-        if (snapActive && prev.length > 0) {
-          const lastPt = prev[prev.length - 1];
-          if (lastPt.x === np.x && lastPt.y === np.y) return prev;
+  // --- Coordinate helpers (rebuilt each render → current transform) ---
+  const screenToWorld = (sx: number, sy: number): SketchVertex => ({
+    x: (sx - transform.tx) / transform.scale,
+    y: (sy - transform.ty) / transform.scale,
+  });
+  const snapWorld = (p: SketchVertex): SketchVertex =>
+    snapActive
+      ? {
+          x: Math.round(p.x / spacing) * spacing,
+          y: Math.round(p.y / spacing) * spacing,
         }
-        return [...prev, np];
-      });
-    })
-    .onEnd(() => {
-      setCurrent((prev) => {
-        if (prev.length > 0) {
-          const d = toPathD(prev);
-          setStrokes((s) => [...s, d]);
-        }
-        return [];
-      });
-    });
+      : p;
 
-  const hasInk = strokes.length > 0 || current.length > 0;
+  // --- Mutations ---
+  const addVertexWorld = useCallback((p: SketchVertex) => {
+    setVertices((v) => [...v, p]);
+    setHistory((h) => [...h, 'v']);
+    void Haptics.selectionAsync();
+  }, []);
+
+  const addLabel = useCallback((l: SketchLabel) => {
+    setLabels((ls) => [...ls, l]);
+    setHistory((h) => [...h, 'l']);
+    setMode('draw');
+    void Haptics.selectionAsync();
+  }, []);
+
+  const promptForLabel = useCallback(
+    (world: SketchVertex) => {
+      if (Platform.OS === 'ios' && typeof Alert.prompt === 'function') {
+        Alert.prompt('Add label', 'Text for this label', (text) => {
+          const t = (text ?? '').trim();
+          if (t) addLabel({ x: world.x, y: world.y, text: t });
+          else setMode('draw');
+        });
+      } else {
+        // Android / fallback: inline TextInput card over the canvas.
+        setLabelDraft({ x: world.x, y: world.y, text: '' });
+      }
+    },
+    [addLabel],
+  );
+
+  const onCanvasTap = useCallback(
+    (sx: number, sy: number) => {
+      if (busy) return;
+      const world = screenToWorld(sx, sy);
+      if (mode === 'label') {
+        promptForLabel(world);
+        return;
+      }
+      // Draw mode. Ignore taps once closed — Undo reopens first.
+      if (closed) return;
+      addVertexWorld(snapWorld(world));
+    },
+    // screenToWorld / snapWorld read transform/snap from the current
+    // render closure; listing the primitives keeps them fresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [busy, mode, closed, transform, snapActive, spacing, promptForLabel, addVertexWorld],
+  );
+
+  const onArrow = useCallback(
+    (dir: Dir8) => {
+      if (busy) return;
+      if (closed) {
+        Alert.alert('Shape is closed', 'Undo the close to keep adding points.');
+        return;
+      }
+      const feet = parseFloat(distanceText);
+      if (!Number.isFinite(feet) || feet <= 0) {
+        Alert.alert(
+          'Enter a distance',
+          'Type a distance in feet, then tap a direction arrow.',
+        );
+        return;
+      }
+      const { dx, dy } = endpointOffset(dir, feet, pxPerFoot);
+      if (vertices.length === 0) {
+        // Seed the run at the center of the current view, then step off.
+        const startWorld = screenToWorld(
+          (size.w || 0) / 2,
+          (size.h || 0) / 2,
+        );
+        const start = snapWorld(startWorld);
+        setVertices([start, { x: start.x + dx, y: start.y + dy }]);
+        setHistory((h) => [...h, 'v', 'v']);
+      } else {
+        const last = vertices[vertices.length - 1];
+        setVertices((v) => [...v, { x: last.x + dx, y: last.y + dy }]);
+        setHistory((h) => [...h, 'v']);
+      }
+      void Haptics.selectionAsync();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [busy, closed, distanceText, pxPerFoot, vertices, size, transform, snapActive, spacing],
+  );
+
+  const onCloseShape = useCallback(() => {
+    if (busy || closed) return;
+    if (vertices.length < 3) {
+      Alert.alert(
+        'Add more points',
+        'A closed shape needs at least 3 points before it encloses an area.',
+      );
+      return;
+    }
+    setClosed(true);
+    setHistory((h) => [...h, 'c']);
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  }, [busy, closed, vertices.length]);
 
   const onUndo = useCallback(() => {
     if (busy) return;
-    // Undo the in-progress stroke first if any, else pop the last one.
-    setCurrent((cur) => {
-      if (cur.length > 0) return [];
-      setStrokes((s) => s.slice(0, -1));
-      return cur;
+    setHistory((h) => {
+      if (h.length === 0) return h;
+      const top = h[h.length - 1];
+      if (top === 'c') setClosed(false);
+      else if (top === 'v') setVertices((v) => v.slice(0, -1));
+      else if (top === 'l') setLabels((l) => l.slice(0, -1));
+      return h.slice(0, -1);
     });
     void Haptics.selectionAsync();
   }, [busy]);
 
   const onClear = useCallback(() => {
     if (busy) return;
-    setStrokes([]);
-    setCurrent([]);
+    setVertices([]);
+    setLabels([]);
+    setClosed(false);
+    setHistory([]);
+    setLabelDraft(null);
     void Haptics.selectionAsync();
   }, [busy]);
 
+  const onResetView = useCallback(() => {
+    setTransform({ tx: 0, ty: 0, scale: 1 });
+    void Haptics.selectionAsync();
+  }, []);
+
+  // --- Gestures (rebuilt each render so closures see current state) ---
+  const panStart = useRef({ tx: 0, ty: 0 });
+  const pinchStart = useRef({ scale: 1, tx: 0, ty: 0, fx: 0, fy: 0 });
+
+  const tapGesture = Gesture.Tap()
+    .runOnJS(true)
+    .enabled(mode !== 'pan')
+    .maxDistance(14)
+    .onEnd((e, success) => {
+      if (success) onCanvasTap(e.x, e.y);
+    });
+
+  const panGesture = Gesture.Pan()
+    .runOnJS(true)
+    .enabled(mode === 'pan')
+    .minDistance(1)
+    .onBegin(() => {
+      panStart.current = { tx: transform.tx, ty: transform.ty };
+    })
+    .onUpdate((e) => {
+      setTransform((t) => ({
+        ...t,
+        tx: panStart.current.tx + e.translationX,
+        ty: panStart.current.ty + e.translationY,
+      }));
+    });
+
+  const pinchGesture = Gesture.Pinch()
+    .runOnJS(true)
+    .enabled(mode === 'pan')
+    .onBegin((e) => {
+      pinchStart.current = {
+        scale: transform.scale,
+        tx: transform.tx,
+        ty: transform.ty,
+        fx: e.focalX,
+        fy: e.focalY,
+      };
+    })
+    .onUpdate((e) => {
+      const s0 = pinchStart.current;
+      const newScale = clampScale(s0.scale * e.scale);
+      // Keep the world point under the (start) focal fixed while zooming.
+      const worldFx = (s0.fx - s0.tx) / s0.scale;
+      const worldFy = (s0.fy - s0.ty) / s0.scale;
+      setTransform({
+        scale: newScale,
+        tx: s0.fx - worldFx * newScale,
+        ty: s0.fy - worldFy * newScale,
+      });
+    });
+
+  const composed = Gesture.Simultaneous(panGesture, pinchGesture, tapGesture);
+
+  // --- GPS pin (carried over from #655) ---
   const onPinLocation = useCallback(async () => {
     if (pinning) return;
     setPinning(true);
     setLocationNote(null);
     try {
-      // Shared one-shot geotag — same accuracy + permission handling as
-      // photo / address capture. Resolves to undefined when denied.
       const fix = await getCurrentGeo({
         onDenied: () =>
           setLocationNote(
@@ -334,8 +530,6 @@ export default function SketchCaptureScreen() {
           ),
       });
       if (!fix) {
-        // A one-time deny (canAskAgain still true) doesn't fire onDenied;
-        // set a soft hint so the user knows nothing was pinned.
         setLocationNote(
           (n) => n ?? 'No location yet — allow location access to pin the site.',
         );
@@ -344,7 +538,6 @@ export default function SketchCaptureScreen() {
       setPinnedGeo(fix);
       setPinnedAt(new Date().toISOString());
       void Haptics.selectionAsync();
-      // Location is granted now, so the compass can resolve true north.
       void startHeading();
     } catch (e) {
       setLocationNote(`Couldn't get a location fix: ${(e as Error).message}`);
@@ -353,50 +546,39 @@ export default function SketchCaptureScreen() {
     }
   }, [pinning, startHeading]);
 
+  // --- Save (rasterize + enqueue/update, persist the vector doc) ---
   const onSave = useCallback(async () => {
     if (busy) return;
-    if (!hasInk) {
-      Alert.alert('Nothing to save', 'Draw something before saving.');
+    if (!hasContent) {
+      Alert.alert('Nothing to save', 'Add points or a label before saving.');
       return;
     }
     setBusy(true);
+    setSaveNote(null);
     try {
-      // Rasterize the canvas to a PNG temp file. The returned string is
-      // the file URI we hand to the sync layer as the `file` part.
       const uri = await captureRef(canvasRef, {
         format: 'png',
         quality: 1,
         result: 'tmpfile',
       });
 
-      // File to an assignment now, or keep in the inbox. Offline picker
-      // failure isn't fatal — fall back to inbox.
-      let assignmentId: string | null = null;
-      try {
-        assignmentId = await pickAssignment();
-      } catch {
-        assignmentId = null;
+      // Pick the assignment on the FIRST save only; reuse it thereafter.
+      if (savedIdRef.current == null) {
+        try {
+          savedAssignmentIdRef.current = await pickAssignment();
+        } catch {
+          savedAssignmentIdRef.current = null;
+        }
       }
-
-      const meta: CaptureMeta = {
-        id: newCaptureId(),
-        kind: 'sketch',
-        localUri: uri,
-        capturedAt: new Date().toISOString(),
-        caption: 'Field sketch',
-        status: 'pending',
-      };
-      if (assignmentId) meta.assignmentId = assignmentId;
-
-      // Pinned site geo → the standard `geo` field (the backend consumes
-      // it like a photo's geotag) AND mirrored into the sketch-specific
-      // record below with the pin timestamp (#655).
-      if (pinnedGeo) meta.geo = pinnedGeo;
+      const assignmentId = savedAssignmentIdRef.current;
 
       const sketchMeta: SketchMeta = {
         gridSize,
         scaleFeetPerSquare: scaleFeet,
         snapEnabled: snapActive,
+        // The editable vector doc — this is what makes the sketch
+        // re-openable and its dimensions/area recomputable from data.
+        vector: { version: 1, pxPerFoot, vertices, labels, closed },
       };
       if (pinnedGeo) {
         sketchMeta.gps = {
@@ -407,40 +589,69 @@ export default function SketchCaptureScreen() {
         };
       }
       if (heading != null) sketchMeta.headingDeg = Math.round(heading);
-      meta.sketch = sketchMeta;
 
-      await enqueue(meta);
+      if (savedIdRef.current == null) {
+        const id = newCaptureId();
+        const meta: CaptureMeta = {
+          id,
+          kind: 'sketch',
+          localUri: uri,
+          capturedAt: new Date().toISOString(),
+          caption: 'Field sketch',
+          status: 'pending',
+          sketch: sketchMeta,
+        };
+        if (assignmentId) meta.assignmentId = assignmentId;
+        if (pinnedGeo) meta.geo = pinnedGeo;
+        await enqueue(meta);
+        savedIdRef.current = id;
+      } else {
+        // Subsequent save → update the same queue item in place and
+        // re-queue it for upload with the fresh PNG + doc.
+        const patch: Partial<CaptureMeta> = {
+          localUri: uri,
+          capturedAt: new Date().toISOString(),
+          status: 'pending',
+          lastError: undefined,
+          sketch: sketchMeta,
+        };
+        if (assignmentId) patch.assignmentId = assignmentId;
+        if (pinnedGeo) patch.geo = pinnedGeo;
+        await updateItem(savedIdRef.current, patch);
+      }
+
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       void syncNow();
-      router.back();
+      // Stay on the canvas — show a brief confirmation only.
+      setSaveNote('Saved');
+      setTimeout(() => setSaveNote(null), 1800);
     } catch (e) {
       Alert.alert('Save failed', (e as Error).message);
     } finally {
-      // Always release the busy lock so the controls (Cancel especially)
-      // can never be stranded disabled if the picker resolves oddly.
       setBusy(false);
     }
   }, [
     busy,
-    hasInk,
-    router,
+    hasContent,
     gridSize,
     scaleFeet,
     snapActive,
+    pxPerFoot,
+    vertices,
+    labels,
+    closed,
     pinnedGeo,
     pinnedAt,
     heading,
   ]);
 
-  const currentD = current.length > 0 ? toPathD(current) : '';
+  const wallD = polylineD(vertices, closed);
+  const invScale = 1 / transform.scale;
 
   return (
     <GestureHandlerRootView style={styles.flex}>
       <SafeAreaView style={styles.flex} edges={['top', 'bottom']}>
         <View style={styles.topBar}>
-          {/* Never gated on `busy`: a stranded save must not trap the
-              user on a screen holding unsaved strokes. router.back()
-              during an in-flight save is safe — the enqueue completes. */}
           <Pressable
             style={[styles.closeButton, styles.closeRow]}
             onPress={() => router.back()}
@@ -448,15 +659,11 @@ export default function SketchCaptureScreen() {
             <Ionicons name="arrow-back" size={15} color={Brand.navyDeep} />
             <Text style={styles.closeLabel}>Cancel</Text>
           </Pressable>
-          <Text style={styles.topTitle}>Sketch</Text>
+          <Text style={styles.topTitle}>Floor plan</Text>
           <View style={styles.closeButton} />
         </View>
 
-        <Text style={styles.hint}>
-          Draw the floor plan or site detail with your finger or stylus.
-        </Text>
-
-        {/* #655 controls: grid density, real-world scale, snap, pin. */}
+        {/* Grid / scale controls (carried over). */}
         <View style={styles.controls}>
           <View style={styles.controlRow}>
             <Text style={styles.controlLabel}>GRID</Text>
@@ -474,11 +681,6 @@ export default function SketchCaptureScreen() {
               onChange={setScaleFeet}
             />
           </View>
-          <Text style={styles.scaleReadout}>
-            1 square = {scaleFeet} ft
-            {gridSize === 'off' ? ' · grid hidden' : ''}
-          </Text>
-
           <View style={styles.controlRow}>
             <Pressable
               style={[
@@ -494,13 +696,10 @@ export default function SketchCaptureScreen() {
                 size={14}
                 color={snapActive ? Brand.cream : Brand.navyDeep}
               />
-              <Text
-                style={[styles.chipLabel, snapActive && styles.chipLabelOn]}
-              >
-                Snap to grid
+              <Text style={[styles.chipLabel, snapActive && styles.chipLabelOn]}>
+                Snap
               </Text>
             </Pressable>
-
             <Pressable
               style={styles.chipButton}
               onPress={onPinLocation}
@@ -516,11 +715,11 @@ export default function SketchCaptureScreen() {
                 />
               )}
               <Text style={styles.chipLabel}>
-                {pinnedGeo ? 'Re-pin location' : 'Pin location'}
+                {pinnedGeo ? 'Re-pin' : 'Pin site'}
               </Text>
             </Pressable>
+            <Text style={styles.scaleReadout}>1 sq = {scaleFeet} ft</Text>
           </View>
-
           {pinnedGeo ? (
             <View style={styles.geoChip}>
               <Text style={styles.geoChipLabel}>
@@ -536,9 +735,72 @@ export default function SketchCaptureScreen() {
           ) : null}
         </View>
 
-        {/* The captured view. White background so the PNG isn't
-            transparent + reads as a sheet of paper. */}
-        <GestureDetector gesture={pan}>
+        {/* Mode toggle. */}
+        <View style={styles.modeRow}>
+          <Segmented options={MODE_OPTIONS} value={mode} onChange={setMode} />
+          {mode === 'pan' ? (
+            <Pressable style={styles.resetChip} onPress={onResetView}>
+              <Ionicons name="scan-outline" size={14} color={Brand.navyDeep} />
+              <Text style={styles.chipLabel}>Reset</Text>
+            </Pressable>
+          ) : null}
+        </View>
+
+        {/* Precise-entry pad — only in Draw mode. */}
+        {mode === 'draw' ? (
+          <View style={styles.padWrap}>
+            <Text style={styles.padTitle}>
+              Distance + direction (screen-relative)
+            </Text>
+            <View style={styles.pad}>
+              {(['up-left', 'up', 'up-right'] as Dir8[]).map((d) => (
+                <ArrowButton
+                  key={d}
+                  dir={d}
+                  disabled={busy || closed}
+                  onPress={onArrow}
+                />
+              ))}
+            </View>
+            <View style={styles.pad}>
+              <ArrowButton
+                dir="left"
+                disabled={busy || closed}
+                onPress={onArrow}
+              />
+              <View style={styles.padCenter}>
+                <TextInput
+                  style={styles.distanceInput}
+                  value={distanceText}
+                  onChangeText={setDistanceText}
+                  keyboardType="decimal-pad"
+                  placeholder="ft"
+                  placeholderTextColor={Brand.inkFaint}
+                  returnKeyType="done"
+                  maxLength={7}
+                />
+              </View>
+              <ArrowButton
+                dir="right"
+                disabled={busy || closed}
+                onPress={onArrow}
+              />
+            </View>
+            <View style={styles.pad}>
+              {(['down-left', 'down', 'down-right'] as Dir8[]).map((d) => (
+                <ArrowButton
+                  key={d}
+                  dir={d}
+                  disabled={busy || closed}
+                  onPress={onArrow}
+                />
+              ))}
+            </View>
+          </View>
+        ) : null}
+
+        {/* The captured surface. */}
+        <GestureDetector gesture={composed}>
           <View
             ref={canvasRef}
             collapsable={false}
@@ -546,59 +808,94 @@ export default function SketchCaptureScreen() {
             onLayout={onCanvasLayout}
           >
             <Svg style={StyleSheet.absoluteFill}>
-              {/* Graph-paper grid, drawn first so strokes sit on top. It
-                  appears in the rasterized PNG (a helpful background) but
-                  is never part of stroke data — the `d` strings carry no
-                  grid info. */}
-              {grid.xs.map((x) => (
-                <Line
-                  key={`vx${x}`}
-                  x1={x}
-                  y1={0}
-                  x2={x}
-                  y2={size.h}
-                  stroke={GRID_COLOR}
-                  strokeWidth={1}
-                />
-              ))}
-              {grid.ys.map((y) => (
-                <Line
-                  key={`hy${y}`}
-                  x1={0}
-                  y1={y}
-                  x2={size.w}
-                  y2={y}
-                  stroke={GRID_COLOR}
-                  strokeWidth={1}
-                />
-              ))}
-              {strokes.map((d, i) => (
-                <Path
-                  key={`s${i}`}
-                  d={d}
-                  stroke={STROKE_COLOR}
-                  strokeWidth={STROKE_WIDTH}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  fill="none"
-                />
-              ))}
-              {currentD ? (
-                <Path
-                  d={currentD}
-                  stroke={STROKE_COLOR}
-                  strokeWidth={STROKE_WIDTH}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  fill="none"
-                />
-              ) : null}
+              <G
+                transform={`translate(${transform.tx}, ${transform.ty}) scale(${transform.scale})`}
+              >
+                {/* Graph-paper grid (world space). */}
+                {grid.xs.map((x, i) => (
+                  <Line
+                    key={`vx${i}`}
+                    x1={x}
+                    y1={(0 - transform.ty) / transform.scale}
+                    x2={x}
+                    y2={(size.h - transform.ty) / transform.scale}
+                    stroke={GRID_COLOR}
+                    strokeWidth={invScale}
+                  />
+                ))}
+                {grid.ys.map((y, i) => (
+                  <Line
+                    key={`hy${i}`}
+                    x1={(0 - transform.tx) / transform.scale}
+                    y1={y}
+                    x2={(size.w - transform.tx) / transform.scale}
+                    y2={y}
+                    stroke={GRID_COLOR}
+                    strokeWidth={invScale}
+                  />
+                ))}
+
+                {/* Walls. */}
+                {wallD ? (
+                  <Path
+                    d={wallD}
+                    stroke={STROKE_COLOR}
+                    strokeWidth={STROKE_WIDTH * invScale}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    fill={closed ? FILL_COLOR : 'none'}
+                  />
+                ) : null}
+
+                {/* Vertices — last one highlighted as the active endpoint. */}
+                {vertices.map((p, i) => {
+                  const isLast = i === vertices.length - 1 && !closed;
+                  return (
+                    <Circle
+                      key={`pt${i}`}
+                      cx={p.x}
+                      cy={p.y}
+                      r={(isLast ? 6 : 4) * invScale}
+                      fill={isLast ? Brand.gold : Brand.navyDeep}
+                      stroke={Brand.cream}
+                      strokeWidth={invScale}
+                    />
+                  );
+                })}
+
+                {/* Segment dimensions at each midpoint. */}
+                {segs.map((s, i) => (
+                  <SvgText
+                    key={`seg${i}`}
+                    x={s.mid.x}
+                    y={s.mid.y - 4 * invScale}
+                    fill={Brand.navyDeep}
+                    fontSize={12 * invScale}
+                    fontWeight="700"
+                    textAnchor="middle"
+                  >
+                    {`${s.feet.toFixed(1)}'`}
+                  </SvgText>
+                ))}
+
+                {/* Free-floating labels. */}
+                {labels.map((l, i) => (
+                  <SvgText
+                    key={`lbl${i}`}
+                    x={l.x}
+                    y={l.y}
+                    fill={Brand.navyDeep}
+                    fontSize={14 * invScale}
+                    fontWeight="700"
+                    textAnchor="middle"
+                  >
+                    {l.text}
+                  </SvgText>
+                ))}
+              </G>
             </Svg>
 
-            {/* North arrow — rotates toward real north; hidden when the
-                device has no compass. pointerEvents none so it never
-                blocks drawing (it does appear in the PNG, which is
-                desirable on a floor plan). */}
+            {/* North arrow (screen space; carried over). */}
             {heading != null ? (
               <View style={styles.northArrow} pointerEvents="none">
                 <View
@@ -613,55 +910,176 @@ export default function SketchCaptureScreen() {
               </View>
             ) : null}
 
-            {!hasInk ? (
+            {/* Mode hint / empty state. */}
+            {!hasContent ? (
               <View style={styles.emptyHint} pointerEvents="none">
-                <Text style={styles.emptyHintLabel}>Draw here</Text>
+                <Text style={styles.emptyHintLabel}>
+                  {mode === 'pan'
+                    ? 'Drag to pan · pinch to zoom'
+                    : mode === 'label'
+                      ? 'Tap to place a label'
+                      : 'Tap to drop points, or use the pad above'}
+                </Text>
+              </View>
+            ) : null}
+            {saveNote ? (
+              <View style={styles.saveToast} pointerEvents="none">
+                <Ionicons name="checkmark-circle" size={16} color={Brand.cream} />
+                <Text style={styles.saveToastLabel}>{saveNote}</Text>
+              </View>
+            ) : null}
+
+            {/* Android inline label draft. */}
+            {labelDraft ? (
+              <View style={styles.labelDraftCard}>
+                <Text style={styles.labelDraftTitle}>Add label</Text>
+                <TextInput
+                  style={styles.labelDraftInput}
+                  value={labelDraft.text}
+                  onChangeText={(t) =>
+                    setLabelDraft((d) => (d ? { ...d, text: t } : d))
+                  }
+                  placeholder="e.g. Garage"
+                  placeholderTextColor={Brand.inkFaint}
+                  autoFocus
+                />
+                <View style={styles.labelDraftRow}>
+                  <Pressable
+                    style={styles.labelDraftBtn}
+                    onPress={() => {
+                      setLabelDraft(null);
+                      setMode('draw');
+                    }}
+                  >
+                    <Text style={styles.labelDraftBtnLabel}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.labelDraftBtn, styles.labelDraftBtnPrimary]}
+                    onPress={() => {
+                      const t = labelDraft.text.trim();
+                      if (t) addLabel({ x: labelDraft.x, y: labelDraft.y, text: t });
+                      setLabelDraft(null);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.labelDraftBtnLabel,
+                        styles.labelDraftBtnLabelPrimary,
+                      ]}
+                    >
+                      Add
+                    </Text>
+                  </Pressable>
+                </View>
               </View>
             ) : null}
           </View>
         </GestureDetector>
 
+        {/* Measurement readout. */}
+        <View style={styles.readout}>
+          {closed && area > 0 ? (
+            <Text style={styles.readoutArea}>
+              Area {area.toFixed(1)} sq ft
+              <Text style={styles.readoutPerim}>
+                {'   ·   '}Perimeter {perimeter.toFixed(1)} ft
+              </Text>
+            </Text>
+          ) : vertices.length >= 2 ? (
+            <Text style={styles.readoutPerim}>
+              Path {perimeter.toFixed(1)} ft · tap “Close shape” for area
+            </Text>
+          ) : (
+            <Text style={styles.readoutPerim}>
+              {vertices.length === 1
+                ? 'One point placed — add the next'
+                : 'No points yet'}
+            </Text>
+          )}
+        </View>
+
         <View style={styles.toolbar}>
           <Pressable
             style={({ pressed }) => [
               styles.toolButton,
-              (!hasInk || busy) && styles.toolButtonDisabled,
-              pressed && hasInk && !busy && styles.toolButtonPressed,
+              (history.length === 0 || busy) && styles.toolButtonDisabled,
+              pressed && styles.toolButtonPressed,
             ]}
             onPress={onUndo}
-            disabled={!hasInk || busy}
+            disabled={history.length === 0 || busy}
           >
             <Text style={styles.toolLabel}>Undo</Text>
           </Pressable>
           <Pressable
             style={({ pressed }) => [
               styles.toolButton,
-              (!hasInk || busy) && styles.toolButtonDisabled,
-              pressed && hasInk && !busy && styles.toolButtonPressed,
+              (!hasContent || busy) && styles.toolButtonDisabled,
+              pressed && styles.toolButtonPressed,
             ]}
             onPress={onClear}
-            disabled={!hasInk || busy}
+            disabled={!hasContent || busy}
           >
             <Text style={styles.toolLabel}>Clear</Text>
           </Pressable>
           <Pressable
             style={({ pressed }) => [
+              styles.toolButton,
+              (closed || vertices.length < 3 || busy) &&
+                styles.toolButtonDisabled,
+              pressed && styles.toolButtonPressed,
+            ]}
+            onPress={onCloseShape}
+            disabled={closed || vertices.length < 3 || busy}
+          >
+            <Text style={styles.toolLabel}>
+              {closed ? 'Closed' : 'Close shape'}
+            </Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [
               styles.saveButton,
-              (!hasInk || busy) && styles.saveButtonDisabled,
-              pressed && hasInk && !busy && styles.saveButtonPressed,
+              (!hasContent || busy) && styles.saveButtonDisabled,
+              pressed && hasContent && !busy && styles.saveButtonPressed,
             ]}
             onPress={onSave}
-            disabled={!hasInk || busy}
+            disabled={!hasContent || busy}
           >
             {busy ? (
               <ActivityIndicator color={Brand.cream} />
             ) : (
-              <Text style={styles.saveLabel}>Save sketch</Text>
+              <Text style={styles.saveLabel}>
+                {savedIdRef.current ? 'Update' : 'Save'}
+              </Text>
             )}
           </Pressable>
         </View>
       </SafeAreaView>
     </GestureHandlerRootView>
+  );
+}
+
+/** One arrow in the 8-direction precise-entry pad. */
+function ArrowButton({
+  dir,
+  disabled,
+  onPress,
+}: {
+  dir: Dir8;
+  disabled: boolean;
+  onPress: (d: Dir8) => void;
+}) {
+  return (
+    <Pressable
+      style={({ pressed }) => [
+        styles.arrowBtn,
+        disabled && styles.arrowBtnDisabled,
+        pressed && !disabled && styles.arrowBtnPressed,
+      ]}
+      onPress={() => onPress(dir)}
+      disabled={disabled}
+    >
+      <Text style={styles.arrowGlyph}>{ARROW_GLYPH[dir]}</Text>
+    </Pressable>
   );
 }
 
@@ -673,7 +1091,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: Spacing.three,
     paddingTop: Spacing.two,
-    paddingBottom: Spacing.two,
+    paddingBottom: Spacing.one,
   },
   closeButton: {
     minWidth: 72,
@@ -682,30 +1100,16 @@ const styles = StyleSheet.create({
   },
   closeRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
   closeLabel: { color: Brand.navyDeep, fontSize: 15, fontWeight: '600' },
-  topTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: Brand.navyDeep,
-  },
-  hint: {
-    fontSize: 13,
-    color: Brand.inkMuted,
-    textAlign: 'center',
-    paddingHorizontal: Spacing.four,
-    marginBottom: Spacing.two,
-  },
+  topTitle: { fontSize: 16, fontWeight: '700', color: Brand.navyDeep },
+
   controls: {
     paddingHorizontal: Spacing.three,
-    marginBottom: Spacing.two,
-    gap: Spacing.two,
+    marginBottom: Spacing.one,
+    gap: Spacing.one,
   },
-  controlRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.two,
-  },
+  controlRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   controlLabel: {
-    width: 44,
+    width: 40,
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 1,
@@ -720,19 +1124,11 @@ const styles = StyleSheet.create({
     borderColor: Brand.border,
     overflow: 'hidden',
   },
-  segmentItem: {
-    flex: 1,
-    paddingVertical: Spacing.two,
-    alignItems: 'center',
-  },
+  segmentItem: { flex: 1, paddingVertical: Spacing.two, alignItems: 'center' },
   segmentItemActive: { backgroundColor: Brand.navyDeep },
   segmentLabel: { fontSize: 13, fontWeight: '600', color: Brand.navyDeep },
   segmentLabelActive: { color: Brand.cream },
-  scaleReadout: {
-    fontSize: 12,
-    color: Brand.inkFaint,
-    marginLeft: 44 + Spacing.two,
-  },
+  scaleReadout: { fontSize: 12, color: Brand.inkFaint, marginLeft: 'auto' },
   chipButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -759,10 +1155,71 @@ const styles = StyleSheet.create({
   },
   geoChipLabel: { fontSize: 12, fontWeight: '600', color: Brand.navyDeep },
   locationNote: { fontSize: 12, color: Brand.amber },
+
+  modeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    paddingHorizontal: Spacing.three,
+    marginBottom: Spacing.one,
+  },
+  resetChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.one,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    borderRadius: Radius.pill,
+    backgroundColor: Brand.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Brand.border,
+  },
+
+  padWrap: {
+    paddingHorizontal: Spacing.three,
+    marginBottom: Spacing.one,
+    alignItems: 'center',
+  },
+  padTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    color: Brand.inkMuted,
+    marginBottom: Spacing.one,
+  },
+  pad: { flexDirection: 'row', gap: Spacing.two, marginBottom: Spacing.two },
+  padCenter: { width: 84, alignItems: 'center', justifyContent: 'center' },
+  arrowBtn: {
+    width: 44,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.md,
+    backgroundColor: Brand.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Brand.border,
+  },
+  arrowBtnDisabled: { opacity: 0.4 },
+  arrowBtnPressed: { backgroundColor: Brand.paperWarm },
+  arrowGlyph: { fontSize: 22, fontWeight: '700', color: Brand.navyDeep },
+  distanceInput: {
+    width: 84,
+    height: 40,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Brand.rule,
+    backgroundColor: '#ffffff',
+    textAlign: 'center',
+    fontSize: 16,
+    fontWeight: '700',
+    color: Brand.navyDeep,
+    paddingVertical: 0,
+  },
+
   canvas: {
     flex: 1,
     marginHorizontal: Spacing.three,
-    marginBottom: Spacing.three,
+    marginBottom: Spacing.two,
     backgroundColor: '#ffffff',
     borderRadius: Radius.md,
     borderWidth: StyleSheet.hairlineWidth,
@@ -780,12 +1237,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     backgroundColor: 'rgba(255,255,255,0.7)',
   },
-  northLabel: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: Brand.red,
-    lineHeight: 13,
-  },
+  northLabel: { fontSize: 11, fontWeight: '800', color: Brand.red, lineHeight: 13 },
   emptyHint: {
     position: 'absolute',
     top: 0,
@@ -794,12 +1246,72 @@ const styles = StyleSheet.create({
     bottom: 0,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: Spacing.four,
   },
   emptyHintLabel: {
-    fontSize: 16,
+    fontSize: 15,
     color: Brand.inkFaint,
     fontWeight: '600',
+    textAlign: 'center',
   },
+  saveToast: {
+    position: 'absolute',
+    top: Spacing.two,
+    left: Spacing.two,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.one,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.one,
+    borderRadius: Radius.pill,
+    backgroundColor: Brand.green,
+  },
+  saveToastLabel: { color: Brand.cream, fontSize: 13, fontWeight: '700' },
+  labelDraftCard: {
+    position: 'absolute',
+    left: Spacing.three,
+    right: Spacing.three,
+    bottom: Spacing.three,
+    padding: Spacing.three,
+    borderRadius: Radius.md,
+    backgroundColor: Brand.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Brand.border,
+    gap: Spacing.two,
+  },
+  labelDraftTitle: { fontSize: 13, fontWeight: '700', color: Brand.navyDeep },
+  labelDraftInput: {
+    height: 40,
+    borderRadius: Radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Brand.rule,
+    backgroundColor: '#ffffff',
+    paddingHorizontal: Spacing.two,
+    fontSize: 15,
+    color: Brand.navyDeep,
+  },
+  labelDraftRow: { flexDirection: 'row', gap: Spacing.two, justifyContent: 'flex-end' },
+  labelDraftBtn: {
+    paddingHorizontal: Spacing.four,
+    paddingVertical: Spacing.two,
+    borderRadius: Radius.md,
+    backgroundColor: Brand.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Brand.border,
+  },
+  labelDraftBtnPrimary: { backgroundColor: Brand.navyDeep, borderColor: Brand.navyDeep },
+  labelDraftBtnLabel: { fontSize: 14, fontWeight: '600', color: Brand.navyDeep },
+  labelDraftBtnLabelPrimary: { color: Brand.cream },
+
+  readout: {
+    paddingHorizontal: Spacing.three,
+    paddingBottom: Spacing.one,
+    minHeight: 22,
+    justifyContent: 'center',
+  },
+  readoutArea: { fontSize: 16, fontWeight: '800', color: Brand.navyDeep },
+  readoutPerim: { fontSize: 13, fontWeight: '600', color: Brand.inkMuted },
+
   toolbar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -808,7 +1320,7 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.two,
   },
   toolButton: {
-    paddingHorizontal: Spacing.four,
+    paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.three,
     borderRadius: Radius.md,
     backgroundColor: Brand.surface,
@@ -817,7 +1329,7 @@ const styles = StyleSheet.create({
   },
   toolButtonDisabled: { opacity: 0.5 },
   toolButtonPressed: { opacity: 0.8 },
-  toolLabel: { color: Brand.navyDeep, fontSize: 15, fontWeight: '600' },
+  toolLabel: { color: Brand.navyDeep, fontSize: 14, fontWeight: '600' },
   saveButton: {
     flex: 1,
     alignItems: 'center',
