@@ -211,3 +211,114 @@ export function endpointOffset(
 export function emptyDoc(pxPerFoot: number): SketchDoc {
   return { version: 1, pxPerFoot, vertices: [], labels: [], closed: false };
 }
+
+/**
+ * Rescale a document's pixel space by `factor` about the origin (0,0):
+ * every vertex and label coordinate is multiplied by `factor`, and so is
+ * `pxPerFoot`. Because both the pixel geometry AND the calibration scale
+ * together, every real-world measurement (segment feet, perimeter, area)
+ * is INVARIANT — this is how the editor recalibrates when the user
+ * changes grid density or drawing scale after drawing: a 20 ft wall
+ * stays a 20 ft wall.
+ *
+ * A non-finite, non-positive, or identity factor returns the document
+ * unchanged (same reference) so callers can apply it unconditionally.
+ */
+export function rescaleDoc(doc: SketchDoc, factor: number): SketchDoc {
+  if (!Number.isFinite(factor) || factor <= 0 || factor === 1) return doc;
+  return {
+    ...doc,
+    pxPerFoot: doc.pxPerFoot * factor,
+    vertices: doc.vertices.map((p) => ({ x: p.x * factor, y: p.y * factor })),
+    labels: doc.labels.map((l) => ({ ...l, x: l.x * factor, y: l.y * factor })),
+  };
+}
+
+/** Tolerance for the orientation / bounding-box predicates below. */
+const GEOM_EPS = 1e-9;
+
+/**
+ * Orientation of the ordered triplet (a, b, c) via the cross product of
+ * ab × ac: +1 / −1 for the two turn directions, 0 for (near-)collinear.
+ */
+function orientation(a: SketchVertex, b: SketchVertex, c: SketchVertex): number {
+  const v = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  if (Math.abs(v) <= GEOM_EPS) return 0;
+  return v > 0 ? 1 : -1;
+}
+
+/** Whether p (known collinear with a–b) lies within a–b's bounding box. */
+function onSegment(a: SketchVertex, b: SketchVertex, p: SketchVertex): boolean {
+  return (
+    Math.min(a.x, b.x) - GEOM_EPS <= p.x &&
+    p.x <= Math.max(a.x, b.x) + GEOM_EPS &&
+    Math.min(a.y, b.y) - GEOM_EPS <= p.y &&
+    p.y <= Math.max(a.y, b.y) + GEOM_EPS
+  );
+}
+
+/**
+ * Standard segment-pair intersection test (orientation predicate plus
+ * collinear on-segment checks): true when p1–p2 and p3–p4 share any
+ * point, whether a proper crossing or a collinear overlap/touch.
+ */
+function segmentsIntersect(
+  p1: SketchVertex,
+  p2: SketchVertex,
+  p3: SketchVertex,
+  p4: SketchVertex,
+): boolean {
+  const d1 = orientation(p3, p4, p1);
+  const d2 = orientation(p3, p4, p2);
+  const d3 = orientation(p1, p2, p3);
+  const d4 = orientation(p1, p2, p4);
+  if (
+    ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+    ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+  ) {
+    return true; // proper crossing
+  }
+  if (d1 === 0 && onSegment(p3, p4, p1)) return true;
+  if (d2 === 0 && onSegment(p3, p4, p2)) return true;
+  if (d3 === 0 && onSegment(p1, p2, p3)) return true;
+  if (d4 === 0 && onSegment(p1, p2, p4)) return true;
+  return false;
+}
+
+/**
+ * Whether the polyline (or, when `closed`, the polygon including the
+ * closing edge last→first) intersects itself. A self-intersecting
+ * outline makes the shoelace area silently wrong (a bowtie "encloses"
+ * far less than the formula reports), so the editor uses this to warn
+ * instead of showing a bogus square-footage.
+ *
+ * O(n²) over all NON-ADJACENT edge pairs — edges that share a vertex
+ * (consecutive edges, and the closing edge with the first/last edge)
+ * legitimately touch at that vertex and are skipped. Touches or overlaps
+ * between non-adjacent edges DO count: an outline that revisits an
+ * earlier wall is a defect the appraiser needs to see.
+ */
+export function hasSelfIntersection(
+  vertices: SketchVertex[],
+  closed: boolean,
+): boolean {
+  const n = vertices.length;
+  // Edges as index pairs so adjacency is exact (shared VERTEX INDEX),
+  // immune to coincidentally-equal coordinates elsewhere in the path.
+  const edges: [number, number][] = [];
+  for (let i = 0; i < n - 1; i++) edges.push([i, i + 1]);
+  if (closed && n >= 3) edges.push([n - 1, 0]);
+  for (let a = 0; a < edges.length; a++) {
+    for (let b = a + 1; b < edges.length; b++) {
+      const [i1, i2] = edges[a];
+      const [j1, j2] = edges[b];
+      if (i1 === j1 || i1 === j2 || i2 === j1 || i2 === j2) continue;
+      if (
+        segmentsIntersect(vertices[i1], vertices[i2], vertices[j1], vertices[j2])
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}

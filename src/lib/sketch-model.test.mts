@@ -29,8 +29,10 @@ import {
   type Dir8,
   emptyDoc,
   endpointOffset,
+  hasSelfIntersection,
   perimeterFeet,
   pxPerFootFromGrid,
+  rescaleDoc,
   segmentLengthFeet,
   segments,
   type SketchDoc,
@@ -241,6 +243,130 @@ test('endpointOffset: appraiser round-trip -- pace a 20x15 rectangle by arrows',
   const doc = closedDoc(ppf, verts.slice(0, -1));
   assert.ok(Math.abs(areaSquareFeet(doc) - 300) < APPROX);
   assert.ok(Math.abs(perimeterFeet(doc) - 70) < APPROX);
+});
+
+test('rescaleDoc: a 20 ft wall stays 20 ft across a 1 ft → 5 ft scale change', () => {
+  // The calibration-instability bug: same 24 px grid, scale flips 1 ft
+  // → 5 ft per square. pxPerFoot goes 24 → 4.8, factor = 4.8/24 = 0.2.
+  const oldPpf = pxPerFootFromGrid(24, 1); // 24 px/ft
+  const newPpf = pxPerFootFromGrid(24, 5); // 4.8 px/ft
+  const doc: SketchDoc = {
+    version: 1,
+    pxPerFoot: oldPpf,
+    vertices: [
+      { x: 0, y: 0 },
+      { x: 480, y: 0 }, // 480 px at 24 px/ft = 20 ft
+    ],
+    labels: [{ x: 240, y: -10, text: 'Front wall' }],
+    closed: false,
+  };
+  assert.ok(Math.abs(segments(doc)[0].feet - 20) < APPROX);
+
+  const out = rescaleDoc(doc, newPpf / oldPpf);
+  // Calibration followed the factor…
+  assert.ok(Math.abs(out.pxPerFoot - newPpf) < APPROX);
+  // …geometry scaled about the origin…
+  assert.ok(Math.abs(out.vertices[1].x - 96) < APPROX);
+  assert.ok(Math.abs(out.labels[0].x - 48) < APPROX);
+  assert.ok(Math.abs(out.labels[0].y - -2) < APPROX);
+  assert.equal(out.labels[0].text, 'Front wall');
+  // …so the REAL measurement is invariant: still exactly 20 ft.
+  assert.ok(Math.abs(segments(out)[0].feet - 20) < APPROX);
+});
+
+test('rescaleDoc: area and perimeter are invariant', () => {
+  // 20 x 15 ft rectangle at 24 px/ft = 300 sq ft, 70 ft perimeter.
+  const doc = closedDoc(24, [
+    { x: 0, y: 0 },
+    { x: 480, y: 0 },
+    { x: 480, y: 360 },
+    { x: 0, y: 360 },
+  ]);
+  const out = rescaleDoc(doc, 0.2);
+  assert.ok(Math.abs(areaSquareFeet(out) - 300) < APPROX);
+  assert.ok(Math.abs(perimeterFeet(out) - 70) < APPROX);
+  // Round-trip back to the original calibration is also invariant.
+  const back = rescaleDoc(out, 5);
+  assert.ok(Math.abs(areaSquareFeet(back) - 300) < APPROX);
+  assert.ok(Math.abs(back.pxPerFoot - 24) < APPROX);
+});
+
+test('rescaleDoc: identity / invalid factors return the doc unchanged', () => {
+  const doc = closedDoc(24, [
+    { x: 0, y: 0 },
+    { x: 480, y: 0 },
+    { x: 480, y: 360 },
+  ]);
+  assert.equal(rescaleDoc(doc, 1), doc); // same reference — no churn
+  assert.equal(rescaleDoc(doc, 0), doc);
+  assert.equal(rescaleDoc(doc, -2), doc);
+  assert.equal(rescaleDoc(doc, Number.NaN), doc);
+  assert.equal(rescaleDoc(doc, Number.POSITIVE_INFINITY), doc);
+});
+
+test('hasSelfIntersection: bowtie true, rectangle false', () => {
+  // Bowtie: edges (0,0)-(10,10) and (10,0)-(0,10) cross at (5,5).
+  const bowtie: SketchVertex[] = [
+    { x: 0, y: 0 },
+    { x: 10, y: 10 },
+    { x: 10, y: 0 },
+    { x: 0, y: 10 },
+  ];
+  assert.equal(hasSelfIntersection(bowtie, true), true);
+
+  const rect: SketchVertex[] = [
+    { x: 0, y: 0 },
+    { x: 10, y: 0 },
+    { x: 10, y: 10 },
+    { x: 0, y: 10 },
+  ];
+  assert.equal(hasSelfIntersection(rect, true), false);
+  assert.equal(hasSelfIntersection(rect, false), false);
+});
+
+test('hasSelfIntersection: adjacent edges sharing a vertex do not count', () => {
+  // A simple right angle — consecutive edges meet at (10,0) by design.
+  const corner: SketchVertex[] = [
+    { x: 0, y: 0 },
+    { x: 10, y: 0 },
+    { x: 10, y: 10 },
+  ];
+  assert.equal(hasSelfIntersection(corner, false), false);
+  // Closed triangle: closing edge shares endpoints with first/last edge.
+  assert.equal(hasSelfIntersection(corner, true), false);
+});
+
+test('hasSelfIntersection: open-path crossing detected', () => {
+  // Edge (4,4)-(2,-2) crosses edge (0,0)-(4,0) at (8/3, 0).
+  const zig: SketchVertex[] = [
+    { x: 0, y: 0 },
+    { x: 4, y: 0 },
+    { x: 4, y: 4 },
+    { x: 2, y: -2 },
+  ];
+  assert.equal(hasSelfIntersection(zig, false), true);
+});
+
+test('hasSelfIntersection: closing edge counted only when closed', () => {
+  // Open, no edge pair crosses. Closing edge (10,10)→(0,0) crosses the
+  // (10,0)→(5,15) edge at (7.5, 7.5).
+  const verts: SketchVertex[] = [
+    { x: 0, y: 0 },
+    { x: 10, y: 0 },
+    { x: 5, y: 15 },
+    { x: 10, y: 10 },
+  ];
+  assert.equal(hasSelfIntersection(verts, false), false);
+  assert.equal(hasSelfIntersection(verts, true), true);
+});
+
+test('hasSelfIntersection: degenerate inputs are safe', () => {
+  assert.equal(hasSelfIntersection([], false), false);
+  assert.equal(hasSelfIntersection([{ x: 0, y: 0 }], true), false);
+  assert.equal(
+    hasSelfIntersection([{ x: 0, y: 0 }, { x: 5, y: 5 }], true),
+    false,
+  );
 });
 
 test('emptyDoc: calibrated, empty, open', () => {
