@@ -76,12 +76,33 @@ export async function syncNow(): Promise<SyncResult> {
     for (const item of pending) {
       attempted++;
       try {
+        // Remember exactly which bytes this pass uploads so a mid-pass
+        // content change is detectable below.
+        const uploadedUri = item.localUri;
         await updateItem(item.id, { status: 'uploading' });
-        await uploadOne(item);
-        await updateItem(item.id, {
-          status: 'synced',
-          lastError: undefined,
-        });
+        const serverId = await uploadOne(item);
+        // Race guard: a save can flip this row back to 'pending' with
+        // FRESH content while the upload was in flight — unconditionally
+        // stamping 'synced' here would silently mark those unsaved bytes
+        // as uploaded. Re-read the row and only mark it synced when it
+        // still holds the exact bytes this pass uploaded; otherwise
+        // leave it pending for the next pass. A row that vanished
+        // mid-pass (superseded by a newer revision and removed) is left
+        // alone entirely.
+        const fresh = (await loadQueue()).find((it) => it.id === item.id);
+        if (fresh && fresh.localUri === uploadedUri) {
+          await updateItem(item.id, {
+            status: 'synced',
+            lastError: undefined,
+            ...(serverId ? { serverId } : {}),
+          });
+        } else if (fresh) {
+          // Content changed under us — requeue; the next pass uploads
+          // the new bytes. (Do NOT record serverId: it identifies the
+          // OLD revision's server row, and pairing it with new local
+          // bytes would misdirect a later supersede-delete.)
+          await updateItem(item.id, { status: 'pending' });
+        }
         succeeded++;
       } catch (e) {
         const msg = (e as Error).message ?? 'unknown error';
@@ -160,7 +181,16 @@ function uploadPartFor(item: CaptureMeta): { ext: string; type: string } {
   return { ext: 'jpg', type: 'image/jpeg' };
 }
 
-async function uploadOne(item: CaptureMeta): Promise<void> {
+/**
+ * Upload one capture. On success, returns the SERVER capture id (a UUID)
+ * parsed from the response body — the backend answers both 201-created
+ * and 200-idempotent-replay with the persisted capture record. The
+ * caller persists it as `serverId` so a later revision that supersedes
+ * this capture can DELETE the stale server copy (the delete endpoint
+ * takes the server UUID, not our client id). Returns undefined when the
+ * body isn't parseable — everything still works, minus that delete.
+ */
+async function uploadOne(item: CaptureMeta): Promise<string | undefined> {
   // #516: upload via the native multipart uploader (expo-file-system),
   // NOT RN FormData. RN 0.85 is New-Architecture-only, and the New Arch
   // rejects FormData `{uri,...}` parts with "Unsupported FormDataPart
@@ -198,6 +228,18 @@ async function uploadOne(item: CaptureMeta): Promise<void> {
           captured_at: item.sketch.gps.capturedAt,
         },
         heading_deg: item.sketch.headingDeg,
+        // #666 additive: the editable vector floor-plan doc. `undefined`
+        // for raster-only / older sketches, so JSON.stringify DROPS the
+        // key and the wire stays byte-identical for those. Vertices +
+        // labels are already plain {x,y}/{x,y,text}; only pxPerFoot is
+        // snake-cased to match the rest of the sketch payload.
+        vector: item.sketch.vector && {
+          version: item.sketch.vector.version,
+          px_per_foot: item.sketch.vector.pxPerFoot,
+          vertices: item.sketch.vector.vertices,
+          labels: item.sketch.vector.labels,
+          closed: item.sketch.vector.closed,
+        },
       },
     }),
   };
@@ -216,6 +258,14 @@ async function uploadOne(item: CaptureMeta): Promise<void> {
     }
     throw new Error(detail);
   }
+
+  try {
+    const body = JSON.parse(res.body) as { id?: string };
+    if (typeof body?.id === 'string' && body.id.length > 0) return body.id;
+  } catch {
+    // Body wasn't the expected record — no server id to record.
+  }
+  return undefined;
 }
 
 /**

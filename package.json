@@ -50,6 +50,7 @@
   },
   "scripts": {
     "start": "expo start",
+    "test": "tsc -p tsconfig.test.json --noEmit && node --test \"src/lib/**/*.test.mts\"",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo start --android",
     "ios": "expo start --ios",

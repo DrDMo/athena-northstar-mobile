@@ -17,6 +17,8 @@
 import { File, Paths } from 'expo-file-system';
 import * as Location from 'expo-location';
 
+import type { SketchDoc } from './sketch-model';
+
 export type CaptureKind = 'photo' | 'voice_note' | 'text_note' | 'sketch';
 
 /** Graph-paper grid density on the sketch surface. */
@@ -45,6 +47,16 @@ export type SketchMeta = {
   };
   /** Compass heading (degrees, 0 = north) of the north arrow at save time. */
   headingDeg?: number;
+  /**
+   * The editable vector floor-plan document (#666). Present on sketches
+   * saved by the vector editor; carries the exact vertices, labels,
+   * closed-state, and `pxPerFoot` so the sketch is re-editable and its
+   * dimensions/area are recomputable from data alone (not the PNG).
+   * Additive + optional: older sketches (raster-only) and every
+   * non-sketch capture omit it, so the persisted queue + sync wire only
+   * ever GAIN this key.
+   */
+  vector?: SketchDoc;
 };
 
 export type CaptureMeta = {
@@ -91,6 +103,18 @@ export type CaptureMeta = {
   status: 'pending' | 'uploading' | 'synced' | 'failed';
 
   lastError?: string;
+
+  /**
+   * Server-side capture id (a UUID), learned from the upload response
+   * when this row syncs. Distinct from our client `cap_…` id (which
+   * travels as `meta.client_id`). Needed so a later save that SUPERSEDES
+   * this capture (#666 vector sketch re-save) can best-effort
+   * `DELETE /v1/captures/{id}` the stale server copy — the delete
+   * endpoint parses its path segment as a UUID, so the client id won't
+   * do. Optional + additive: rows synced before this field existed just
+   * skip that delete (an old revision lingers server-side, harmlessly).
+   */
+  serverId?: string;
 };
 
 /**

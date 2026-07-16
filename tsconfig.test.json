@@ -1,0 +1,10 @@
+{
+  "//": "Type-checks the pure geometry unit tests (#666). Kept separate from the app's tsconfig.json so node-only types (@types/node, the node:test runner) never leak into the React Native app's type program. `npm test` runs `tsc -p` here, then `node --test`.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": ["src/lib/**/*.test.mts", "src/lib/sketch-model.ts"]
+}
