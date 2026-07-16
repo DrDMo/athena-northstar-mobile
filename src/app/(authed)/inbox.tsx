@@ -34,6 +34,7 @@ import { CaptureRow } from '@/components/CaptureRow';
 import { Brand, Radius, Spacing } from '@/constants/theme';
 import {
   deleteCapture,
+  assignmentPickerLabel,
   getCaptureDownloadUrl,
   linkCapture,
   listAssignments,
@@ -101,7 +102,7 @@ export default function InboxScreen() {
   const showAssignmentPicker = useCallback(
     (capture: CaptureSummary, assignments: AssignmentSummary[]) => {
       const buttons = assignments.slice(0, 8).map((a) => ({
-        text: a.name ?? `${a.jurisdiction ?? a.state} · ${a.id.slice(0, 8)}`,
+        text: assignmentPickerLabel(a),
         onPress: async () => {
           try {
             void Haptics.notificationAsync(

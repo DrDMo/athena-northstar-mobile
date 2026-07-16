@@ -3,7 +3,7 @@
     "name": "North Star Appraisal",
     "slug": "northstar-appraisal",
     "owner": "athena-systems",
-    "version": "0.1.12",
+    "version": "0.1.13",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "northstarappraisal",
