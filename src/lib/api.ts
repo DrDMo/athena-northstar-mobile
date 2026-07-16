@@ -277,6 +277,23 @@ export type AssignmentSummary = {
   domain_extension?: Record<string, unknown> | null;
 };
 
+/**
+ * #663/#664: a human-readable label for an assignment — never a raw UUID.
+ * Mirrors the web (name → subject property address → "Unnamed assignment").
+ * Both the list rows and the detail header use this so a nameless draft never
+ * surfaces an `id.slice(...)` UUID fragment as its title.
+ */
+export function assignmentLabel(item: AssignmentSummary): string {
+  const name = item.name?.trim();
+  if (name) return name;
+  const ext = item.domain_extension;
+  if (ext && typeof ext === 'object' && !Array.isArray(ext)) {
+    const addr = (ext as Record<string, unknown>).property_address;
+    if (typeof addr === 'string' && addr.trim().length > 0) return addr.trim();
+  }
+  return 'Unnamed assignment';
+}
+
 export async function listAssignments(): Promise<AssignmentSummary[]> {
   const res = await apiFetch('/v1/cases');
   if (!res.ok) throw new Error(`listAssignments failed (${res.status})`);

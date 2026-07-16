@@ -35,6 +35,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { CaptureRow } from '@/components/CaptureRow';
 import { Brand, Radius, Spacing } from '@/constants/theme';
 import {
+  assignmentLabel,
   getAssignment,
   getCaptureDownloadUrl,
   listAssignmentCaptures,
@@ -128,9 +129,7 @@ export default function AssignmentDetailScreen() {
   const header = (
     <View style={styles.header}>
       <Text style={styles.eyebrow}>ASSIGNMENT</Text>
-      <Text style={styles.title}>
-        {assignment.name ?? assignment.id.slice(0, 12)}
-      </Text>
+      <Text style={styles.title}>{assignmentLabel(assignment)}</Text>
       <View style={styles.metaBlock}>
         <MetaRow label="Jurisdiction" value={assignment.jurisdiction ?? '—'} />
         <MetaRow label="State" value={assignment.state} />
