@@ -29,7 +29,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Brand, Radius, Spacing } from '@/constants/theme';
-import { listAssignments, type AssignmentSummary } from '@/lib/api';
+import { assignmentLabel, listAssignments, type AssignmentSummary } from '@/lib/api';
 
 export default function AssignmentsScreen() {
   const router = useRouter();
@@ -164,23 +164,6 @@ export default function AssignmentsScreen() {
       />
     </SafeAreaView>
   );
-}
-
-/**
- * #663: a human-readable label for an assignment row — never a raw UUID.
- * Mirrors the web (name → subject property address → "Unnamed assignment").
- * An unnamed draft previously fell back to `id.slice(0, 8)`, which surfaced a
- * meaningless UUID fragment on the main screen.
- */
-function assignmentLabel(item: AssignmentSummary): string {
-  const name = item.name?.trim();
-  if (name) return name;
-  const ext = item.domain_extension;
-  if (ext && typeof ext === 'object' && !Array.isArray(ext)) {
-    const addr = (ext as Record<string, unknown>).property_address;
-    if (typeof addr === 'string' && addr.trim().length > 0) return addr.trim();
-  }
-  return 'Unnamed assignment';
 }
 
 const styles = StyleSheet.create({
