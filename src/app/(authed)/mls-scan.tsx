@@ -80,7 +80,7 @@ export default function MlsScanScreen() {
 
         const id = newCaptureId();
         // The scanned value is the note body; reuse the text_note path.
-        const localUri = writeTextNoteFile(id, value);
+        const localUri = await writeTextNoteFile(id, value);
 
         const meta: CaptureMeta = {
           id,

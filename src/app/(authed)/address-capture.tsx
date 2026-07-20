@@ -144,7 +144,7 @@ export default function AddressCaptureScreen() {
       // (a) Durable text_note record of the subject address — same
       //     offline sync path as a photo / voice note.
       const id = newCaptureId();
-      const localUri = writeTextNoteFile(id, `Subject address: ${addr}`);
+      const localUri = await writeTextNoteFile(id, `Subject address: ${addr}`);
       const meta: CaptureMeta = {
         id,
         kind: 'text_note',

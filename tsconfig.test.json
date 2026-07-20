@@ -6,5 +6,9 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "include": ["src/lib/**/*.test.mts", "src/lib/sketch-model.ts"]
+  "include": [
+    "src/lib/**/*.test.mts",
+    "src/lib/sketch-model.ts",
+    "src/lib/vault-crypto.ts"
+  ]
 }

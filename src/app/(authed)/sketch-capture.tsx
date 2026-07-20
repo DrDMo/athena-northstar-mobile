@@ -112,6 +112,7 @@ import {
   type SketchVertex,
 } from '@/lib/sketch-model';
 import { syncNow } from '@/lib/sync';
+import { sealCaptureFile } from '@/lib/vault';
 
 /** Editor interaction mode. */
 type Mode = 'draw' | 'pan' | 'label';
@@ -816,6 +817,10 @@ export default function SketchCaptureScreen() {
       } finally {
         if (fit) setTransform(userTransform);
       }
+      // Seal the rasterized PNG into the vault (PII P0 Phase 3): the
+      // view-shot plaintext tmpfile is encrypted + deleted before
+      // anything persists.
+      uri = await sealCaptureFile(uri);
 
       // Pick the assignment on the FIRST save only; reuse it thereafter.
       if (savedIdRef.current == null) {
