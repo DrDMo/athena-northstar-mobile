@@ -27,7 +27,8 @@ import NetInfo from '@react-native-community/netinfo';
 
 import { uploadCaptureFile } from './api';
 import type { CaptureMeta } from './capture';
-import { loadQueue, pendingItems, updateItem } from './queue';
+import { loadQueue, pendingItems, reclaimStranded, saveQueue, updateItem } from './queue';
+import { capSyncedRows } from './queue-logic';
 
 let inFlight = false;
 
@@ -70,6 +71,13 @@ export async function syncNow(): Promise<SyncResult> {
     // plainly has connectivity (reads succeed), which silently skipped
     // every upload. Just attempt — the per-item catch handles a genuine
     // offline failure and leaves the item queued for the next retry.
+    // Self-heal any rows stranded 'uploading' by a previous crashed
+    // pass BEFORE computing what's pending — pendingItems() excludes
+    // 'uploading', so without this a killed-mid-upload capture would
+    // never be retried and would vanish from the on-screen counts.
+    // syncNow is single-flight (the inFlight guard above), so any
+    // 'uploading' row seen here can only be a leftover, never live.
+    await reclaimStranded();
     const queue = await loadQueue();
     const pending = pendingItems(queue);
 
@@ -111,6 +119,14 @@ export async function syncNow(): Promise<SyncResult> {
         failed++;
       }
     }
+
+    // Bound the durable metadata list so a long-lived install doesn't
+    // grow it until saveQueue() throws and NEW captures silently fail
+    // to persist. Only 'synced' rows past the retention window are
+    // dropped; unsynced work (pending/uploading/failed) is always kept.
+    const settled = await loadQueue();
+    const capped = capSyncedRows(settled);
+    if (capped.length !== settled.length) await saveQueue(capped);
   } finally {
     inFlight = false;
   }
