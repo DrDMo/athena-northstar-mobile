@@ -105,6 +105,17 @@ export type CaptureMeta = {
   lastError?: string;
 
   /**
+   * Lowercase-hex SHA-256 of the captured file's exact bytes, computed
+   * on-device and reconciled against the backend's sealed `sha256_hex` at
+   * upload time. Present once a capture syncs — the "sealed" receipt the UI
+   * can show and the appraiser's on-device proof that the sealed record
+   * covers the bytes captured at the property (custody parity with the
+   * desktop witness agent). A hash mismatch fails the upload instead of
+   * setting this, so its presence means integrity was confirmed.
+   */
+  contentHash?: string;
+
+  /**
    * Server-side capture id (a UUID), learned from the upload response
    * when this row syncs. Distinct from our client `cap_…` id (which
    * travels as `meta.client_id`). Needed so a later save that SUPERSEDES

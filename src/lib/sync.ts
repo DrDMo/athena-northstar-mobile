@@ -27,8 +27,10 @@ import NetInfo from '@react-native-community/netinfo';
 
 import { uploadCaptureFile } from './api';
 import type { CaptureMeta } from './capture';
+import { hashFileHex } from './hash-file';
 import { loadQueue, pendingItems, reclaimStranded, saveQueue, updateItem } from './queue';
 import { capSyncedRows } from './queue-logic';
+import { hashesMatch } from './sha256';
 
 let inFlight = false;
 
@@ -88,7 +90,7 @@ export async function syncNow(): Promise<SyncResult> {
         // content change is detectable below.
         const uploadedUri = item.localUri;
         await updateItem(item.id, { status: 'uploading' });
-        const serverId = await uploadOne(item);
+        const { serverId, contentHash } = await uploadOne(item);
         // Race guard: a save can flip this row back to 'pending' with
         // FRESH content while the upload was in flight — unconditionally
         // stamping 'synced' here would silently mark those unsaved bytes
@@ -102,6 +104,7 @@ export async function syncNow(): Promise<SyncResult> {
           await updateItem(item.id, {
             status: 'synced',
             lastError: undefined,
+            contentHash,
             ...(serverId ? { serverId } : {}),
           });
         } else if (fresh) {
@@ -198,20 +201,30 @@ function uploadPartFor(item: CaptureMeta): { ext: string; type: string } {
 }
 
 /**
- * Upload one capture. On success, returns the SERVER capture id (a UUID)
- * parsed from the response body — the backend answers both 201-created
- * and 200-idempotent-replay with the persisted capture record. The
- * caller persists it as `serverId` so a later revision that supersedes
- * this capture can DELETE the stale server copy (the delete endpoint
- * takes the server UUID, not our client id). Returns undefined when the
- * body isn't parseable — everything still works, minus that delete.
+ * Upload one capture. On success returns the SERVER capture id (a UUID, when
+ * the response body parses — the backend answers both 201-created and
+ * 200-idempotent-replay with the persisted capture record; used later to
+ * supersede-delete a stale server copy) together with `contentHash`, the
+ * on-device SHA-256 of the exact uploaded bytes.
+ *
+ * Integrity: the backend recomputes SHA-256 over the bytes it received and
+ * returns it as `sha256_hex`. This reconciles that against `contentHash`; a
+ * mismatch means the sealed record does NOT cover the captured bytes (a
+ * truncated/corrupted upload) and THROWS so the caller marks the item failed
+ * rather than silently recording it as synced.
  */
-async function uploadOne(item: CaptureMeta): Promise<string | undefined> {
+async function uploadOne(
+  item: CaptureMeta,
+): Promise<{ serverId?: string; contentHash: string }> {
   // #516: upload via the native multipart uploader (expo-file-system),
   // NOT RN FormData. RN 0.85 is New-Architecture-only, and the New Arch
   // rejects FormData `{uri,...}` parts with "Unsupported FormDataPart
   // implementation", so the POST never left the device. See
   // api.ts::uploadCaptureFile.
+
+  // Witness the exact bytes on-device BEFORE the upload — the same file the
+  // multipart uploader sends, so this hash equals what the server seals.
+  const contentHash = await hashFileHex(item.localUri);
 
   // Derive the content-type from the real recording so voice notes upload
   // as audio, not a mislabeled JPEG. (The filename is the URI basename;
@@ -275,13 +288,27 @@ async function uploadOne(item: CaptureMeta): Promise<string | undefined> {
     throw new Error(detail);
   }
 
+  let serverId: string | undefined;
+  let serverHash: string | undefined;
   try {
-    const body = JSON.parse(res.body) as { id?: string };
-    if (typeof body?.id === 'string' && body.id.length > 0) return body.id;
+    const body = JSON.parse(res.body) as { id?: string; sha256_hex?: string };
+    if (typeof body?.id === 'string' && body.id.length > 0) serverId = body.id;
+    if (typeof body?.sha256_hex === 'string') serverHash = body.sha256_hex;
   } catch {
-    // Body wasn't the expected record — no server id to record.
+    // Body wasn't the expected record — no server id / hash to read.
   }
-  return undefined;
+
+  // Reconcile OUTSIDE the JSON try so a genuine integrity mismatch is never
+  // swallowed by the parse catch. Only enforce when the server actually
+  // returned a hash (older backends may not), so this can't break uploads
+  // against a server that predates the field.
+  if (serverHash && !hashesMatch(contentHash, serverHash)) {
+    throw new Error(
+      `integrity mismatch: on-device ${contentHash.slice(0, 12)}… != sealed ${serverHash.slice(0, 12)}…`,
+    );
+  }
+
+  return { serverId, contentHash };
 }
 
 /**
