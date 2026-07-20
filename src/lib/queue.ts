@@ -23,6 +23,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import type { CaptureMeta } from './capture';
+import { hasStrandedRows, reclaimStrandedRows } from './queue-logic';
 
 const KEY = 'northstar.queue.v1';
 
@@ -79,6 +80,21 @@ export async function removeItem(id: string): Promise<CaptureMeta[]> {
 
 export async function clearQueue(): Promise<void> {
   await AsyncStorage.removeItem(KEY);
+}
+
+/**
+ * Self-heal any rows stranded in the 'uploading' state (see
+ * {@link reclaimStrandedRows}) by reverting them to 'pending' so the
+ * sync worker retries them. A cheap no-op — and no write — when there
+ * are none. Called at the start of every sync pass so a crash
+ * mid-upload never permanently strands a capture.
+ */
+export async function reclaimStranded(): Promise<CaptureMeta[]> {
+  const current = await loadQueue();
+  if (!hasStrandedRows(current)) return current;
+  const next = reclaimStrandedRows(current);
+  await saveQueue(next);
+  return next;
 }
 
 /**
