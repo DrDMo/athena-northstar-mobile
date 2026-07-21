@@ -148,16 +148,13 @@ export default function CaptureScreen() {
               disabled={t.disabled}
               onPress={() => {
                 if (t.href === '/sketch-capture') {
-                  // #711 part 2c: every route into the sketch editor
-                  // stamps a fresh `entry`, and the editor's session
-                  // effect re-keys on it — the tile always opens a BLANK
-                  // sketch, never another assignment's leftover canvas
-                  // (the screen stays mounted in the tab navigator, so
-                  // without this the last drawing would still be there).
-                  router.push({
-                    pathname: '/sketch-capture',
-                    params: { entry: String(Date.now()) },
-                  });
+                  // #711 (revised on review): the tile RESUMES an
+                  // in-progress scratch sketch — the editor keys plain
+                  // sessions on the assignment context, so a tab flip +
+                  // re-entry never wipes unsaved strokes, while another
+                  // assignment's canvas still resets. Clear is the way
+                  // to a fresh sheet.
+                  router.push('/sketch-capture');
                 } else if (t.href) {
                   router.push(t.href);
                 }

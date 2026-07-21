@@ -42,8 +42,9 @@ export type SketchMeta = {
     lat: number;
     lng: number;
     accuracyMeters?: number;
-    /** ISO timestamp the pin was captured. */
-    capturedAt: string;
+    /** ISO timestamp the pin was captured; absent when the source wire
+     *  didn't carry one (never fabricated — #711 review). */
+    capturedAt?: string;
   };
   /** Compass heading (degrees, 0 = north) of the north arrow at save time. */
   headingDeg?: number;

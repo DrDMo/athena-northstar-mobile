@@ -428,10 +428,10 @@ function sketchMetaFromWire(w: SketchMetaWire | undefined): SketchMeta {
       lng: w.gps.lng,
       accuracyMeters:
         typeof w.gps.accuracy_m === 'number' ? w.gps.accuracy_m : undefined,
+      // Absent on the wire = unknown — never fabricate "now" as the
+      // pin-capture time (review catch; same audit stance as captured_at).
       capturedAt:
-        typeof w.gps.captured_at === 'string'
-          ? w.gps.captured_at
-          : new Date().toISOString(),
+        typeof w.gps.captured_at === 'string' ? w.gps.captured_at : undefined,
     };
   }
   if (typeof w.heading_deg === 'number' && Number.isFinite(w.heading_deg)) {
@@ -650,8 +650,16 @@ export default function SketchCaptureScreen() {
   // inside assignment B's entry is exactly what part 2c forbids. React
   // re-renders immediately after a render-phase setState, before
   // anything paints.
-  const sessionKey = `${params.entry ?? ''}|${params.editQueueId ?? ''}|${params.editServerId ?? ''}|${params.assignmentId ?? ''}`;
+  // #711 review: PLAIN (scratch) sessions are keyed by the assignment
+  // context ONLY — re-entering via the Capture tile RESUMES an unsaved
+  // sketch instead of silently wiping it, while a different assignment
+  // (or a param-less deep link, which shares only the global scratch)
+  // still gets the isolation reset. EDIT sessions keep the entry nonce
+  // so each Edit tap reloads fresh from its source capture.
   const isEditEntry = Boolean(params.editQueueId || params.editServerId);
+  const sessionKey = isEditEntry
+    ? `edit|${params.entry ?? ''}|${params.editQueueId ?? ''}|${params.editServerId ?? ''}|${params.assignmentId ?? ''}`
+    : `plain|${params.assignmentId ?? ''}`;
   const [activeSession, setActiveSession] = useState<string | null>(null);
   if (activeSession !== sessionKey) {
     // Blank slate: document, view, calibration, pins — the guarantee
@@ -901,6 +909,24 @@ export default function SketchCaptureScreen() {
       ),
     [allVertices, labels, size.w, size.h],
   );
+
+  // #711 review: shrinking the sketch (Undo/Clear of a far shape) can
+  // RAISE the dynamic zoom floor above the current zoom; re-clamp now,
+  // about the canvas center, so the first pinch doesn't visibly jump.
+  useEffect(() => {
+    setTransform((t) => {
+      if (t.scale >= minScale) return t;
+      const f = minScale / t.scale;
+      const cx = size.w / 2;
+      const cy = size.h / 2;
+      return {
+        scale: minScale,
+        tx: cx - (cx - t.tx) * f,
+        ty: cy - (cy - t.ty) * f,
+      };
+    });
+  }, [minScale, size.w, size.h]);
+
 
   /**
    * Recalibrate to (spacingPx, feetPerSquare), keeping real-world feet
@@ -1711,8 +1737,17 @@ export default function SketchCaptureScreen() {
           : undefined;
         const id = newCaptureId();
         await enqueue(buildMeta(id));
-        if (oldId) await removeItem(oldId);
         savedIdRef.current = id;
+        // Best-effort from here down: the NEW revision is safely enqueued,
+        // so a cleanup failure must never surface as "Save failed" (it
+        // would re-save and mint duplicate revisions — review catch).
+        if (oldId) {
+          try {
+            await removeItem(oldId);
+          } catch {
+            // stale local row lingers; the next sync sweep can handle it
+          }
+        }
         // Best-effort: delete the superseded revision's server copy —
         // learned from the queue row when it synced from this device,
         // or carried in by the Edit entry for an already-synced capture
@@ -1729,7 +1764,13 @@ export default function SketchCaptureScreen() {
           const mirror = queueBefore.find(
             (it) => it.id !== oldId && it.serverId === staleServerId,
           );
-          if (mirror) await removeItem(mirror.id);
+          if (mirror) {
+            try {
+              await removeItem(mirror.id);
+            } catch {
+              // stale mirror lingers; harmless
+            }
+          }
         }
         // The supersede chain continues through the LOCAL row from here.
         supersedeServerIdRef.current = null;

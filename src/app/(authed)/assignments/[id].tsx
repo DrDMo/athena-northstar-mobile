@@ -225,7 +225,12 @@ export default function AssignmentDetailScreen() {
           <Text style={styles.sectionTitle}>On this device</Text>
           <View style={styles.localBlock}>
             {localSketches.map((it) => {
-              const editable = parseSketchVector(it.sketch?.vector) != null;
+              // No Edit while the row is mid-upload: superseding it in
+              // that window orphans the in-flight server revision
+              // (review catch) — the pill returns when the upload lands.
+              const editable =
+                it.status !== 'uploading' &&
+                parseSketchVector(it.sketch?.vector) != null;
               return (
                 <View key={it.id} style={styles.row}>
                   <View style={styles.localIcon}>
