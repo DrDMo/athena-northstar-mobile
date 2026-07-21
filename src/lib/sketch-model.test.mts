@@ -27,15 +27,20 @@ import { test } from 'node:test';
 
 import {
   areaSquareFeet,
+  closestPointOnSegment,
   type Dir8,
   docFromShapes,
   docShapes,
+  dynamicMinScale,
   emptyDoc,
   endpointOffset,
+  fitTransformForContent,
   hasSelfIntersection,
+  parseSketchVector,
   perimeterFeet,
   pxPerFootFromGrid,
   rescaleDoc,
+  resolveSnapPoint,
   segmentLengthFeet,
   segments,
   shapeAreaSquareFeet,
@@ -45,6 +50,7 @@ import {
   type SketchDoc,
   type SketchShape,
   type SketchVertex,
+  snapToGrid,
 } from './sketch-model.ts';
 
 const APPROX = 1e-9;
@@ -695,6 +701,324 @@ test('shapeCentroid: L-shape centroid is area-weighted, not the vertex mean', ()
   assert.ok(c != null);
   assert.ok(Math.abs(c.x - 5 / 6) < APPROX);
   assert.ok(Math.abs(c.y - 7 / 6) < APPROX);
+});
+
+// --- Start-point snapping (#711 part 3) ---
+
+/** A closed 10×10 square at the origin plus an open two-wall run. */
+function snapFixture(): SketchShape[] {
+  return [
+    {
+      vertices: [
+        { x: 0, y: 0 },
+        { x: 100, y: 0 },
+        { x: 100, y: 100 },
+        { x: 0, y: 100 },
+      ],
+      closed: true,
+    },
+    {
+      vertices: [
+        { x: 300, y: 0 },
+        { x: 300, y: 100 },
+      ],
+      closed: false,
+    },
+  ];
+}
+
+test('closestPointOnSegment: projection, clamping, degenerate segment', () => {
+  const a = { x: 0, y: 0 };
+  const b = { x: 100, y: 0 };
+  // Perpendicular projection onto the interior.
+  assert.deepEqual(closestPointOnSegment(a, b, { x: 40, y: 30 }), {
+    x: 40,
+    y: 0,
+  });
+  // Beyond either end clamps to the endpoint.
+  assert.deepEqual(closestPointOnSegment(a, b, { x: -50, y: 10 }), a);
+  assert.deepEqual(closestPointOnSegment(a, b, { x: 180, y: -10 }), b);
+  // Zero-length segment returns its (only) point.
+  assert.deepEqual(closestPointOnSegment(a, a, { x: 7, y: 7 }), a);
+});
+
+test('snapToGrid: nearest intersection; non-positive spacing is a no-op', () => {
+  assert.deepEqual(snapToGrid({ x: 30, y: 50 }, 24), { x: 24, y: 48 });
+  assert.deepEqual(snapToGrid({ x: 13, y: 13 }, 24), { x: 24, y: 24 });
+  const p = { x: 5, y: 5 };
+  assert.equal(snapToGrid(p, 0), p);
+});
+
+test('resolveSnapPoint: an existing vertex wins over the grid', () => {
+  // (95, 4) is ~6.4 px from the corner (100, 0) but only ~4.1 px from
+  // the grid intersection (96, 0) at 24-px spacing — the grid point is
+  // CLOSER. Priority, not distance, decides: vertices rank first, so
+  // the corner wins. (It also out-ranks the top wall 4 px below.)
+  const r = resolveSnapPoint({ x: 95, y: 4 }, snapFixture(), {
+    vertexTolerance: 24,
+    segmentTolerance: 16,
+    gridSpacing: 24,
+  });
+  assert.equal(r.kind, 'vertex');
+  assert.deepEqual(r.point, { x: 100, y: 0 });
+});
+
+test('resolveSnapPoint: vertices of ANY shape attract, nearest one wins', () => {
+  // Near the open run's first vertex (300, 0), not the square's corners.
+  const r = resolveSnapPoint({ x: 310, y: 8 }, snapFixture(), {
+    vertexTolerance: 24,
+    segmentTolerance: 16,
+  });
+  assert.equal(r.kind, 'vertex');
+  assert.deepEqual(r.point, { x: 300, y: 0 });
+  // Equidistant-ish: (52, 50) is nearer the left wall corners? No — it
+  // is 52 px from (0,0)… out of a 24 px tolerance, so no vertex snaps;
+  // the LEFT wall x=0 is 52 px away and the top wall y=0 is 50 px away,
+  // both out of segment tolerance too; no grid → untouched.
+  const none = resolveSnapPoint({ x: 52, y: 50 }, snapFixture(), {
+    vertexTolerance: 24,
+    segmentTolerance: 16,
+  });
+  assert.equal(none.kind, 'none');
+  assert.deepEqual(none.point, { x: 52, y: 50 });
+});
+
+test('resolveSnapPoint: mid-wall lands ON the wall via projection', () => {
+  // 10 px off the square's top wall, mid-span: projects to (50, 0).
+  const r = resolveSnapPoint({ x: 50, y: 10 }, snapFixture(), {
+    vertexTolerance: 24,
+    segmentTolerance: 16,
+    gridSpacing: 24,
+  });
+  assert.equal(r.kind, 'segment');
+  assert.deepEqual(r.point, { x: 50, y: 0 });
+  // The CLOSING edge of a closed shape is a wall too: the square's
+  // left wall is vertices[3]→vertices[0]. 12 px off it, mid-span.
+  const closing = resolveSnapPoint({ x: 12, y: 50 }, snapFixture(), {
+    vertexTolerance: 24,
+    segmentTolerance: 16,
+  });
+  assert.equal(closing.kind, 'segment');
+  assert.deepEqual(closing.point, { x: 0, y: 50 });
+});
+
+test('resolveSnapPoint: tolerances are world units — a zoomed view converts dp/scale', () => {
+  const shapes = snapFixture();
+  // At viewScale 2, a 24 dp fingertip is 12 WORLD px. A point 15 world
+  // px from the corner snaps at scale 1 (24-px tolerance)…
+  const at1 = resolveSnapPoint({ x: 100, y: 15 }, shapes, {
+    vertexTolerance: 24 / 1,
+    segmentTolerance: 0,
+  });
+  assert.equal(at1.kind, 'vertex');
+  // …but NOT at scale 2 (12-px tolerance) — same finger, tighter world
+  // radius, exactly how zooming in earns precision.
+  const at2 = resolveSnapPoint({ x: 100, y: 15 }, shapes, {
+    vertexTolerance: 24 / 2,
+    segmentTolerance: 0,
+  });
+  assert.notEqual(at2.kind, 'vertex');
+  // Segment tolerance scales the same way: 16 dp at scale 1 catches a
+  // point 14 px off a wall; at scale 2 (8-px tolerance) it does not.
+  const seg1 = resolveSnapPoint({ x: 50, y: 14 }, shapes, {
+    vertexTolerance: 0,
+    segmentTolerance: 16 / 1,
+  });
+  assert.equal(seg1.kind, 'segment');
+  const seg2 = resolveSnapPoint({ x: 50, y: 14 }, shapes, {
+    vertexTolerance: 0,
+    segmentTolerance: 16 / 2,
+  });
+  assert.equal(seg2.kind, 'none');
+});
+
+test('resolveSnapPoint: the excluded anchor never attracts (no zero-length walls)', () => {
+  const shapes: SketchShape[] = [
+    {
+      vertices: [
+        { x: 0, y: 0 },
+        { x: 100, y: 0 },
+      ],
+      closed: false,
+    },
+  ];
+  const anchor = { x: 100, y: 0 };
+  // 5 px from the anchor: without exclusion this would vertex-snap and
+  // mint a zero-length wall. With it, the segment ENDING at the anchor
+  // is also rejected near the anchor (a near-zero wall is just as bad),
+  // and the grid catches the point instead.
+  const r = resolveSnapPoint({ x: 105, y: 3 }, shapes, {
+    vertexTolerance: 24,
+    segmentTolerance: 16,
+    gridSpacing: 24,
+    exclude: [anchor],
+  });
+  assert.equal(r.kind, 'grid');
+  assert.deepEqual(r.point, { x: 96, y: 0 });
+  // Far from the anchor, the same wall still segment-snaps normally.
+  const mid = resolveSnapPoint({ x: 40, y: 10 }, shapes, {
+    vertexTolerance: 24,
+    segmentTolerance: 16,
+    exclude: [anchor],
+  });
+  assert.equal(mid.kind, 'segment');
+  assert.deepEqual(mid.point, { x: 40, y: 0 });
+});
+
+test('resolveSnapPoint: grid used only when spacing > 0; else untouched', () => {
+  const away = { x: 500, y: 500 };
+  const grid = resolveSnapPoint(away, snapFixture(), {
+    vertexTolerance: 24,
+    segmentTolerance: 16,
+    gridSpacing: 24,
+  });
+  assert.equal(grid.kind, 'grid');
+  assert.deepEqual(grid.point, { x: 504, y: 504 });
+  const off = resolveSnapPoint(away, snapFixture(), {
+    vertexTolerance: 24,
+    segmentTolerance: 16,
+    gridSpacing: 0,
+  });
+  assert.equal(off.kind, 'none');
+  assert.deepEqual(off.point, away);
+});
+
+// --- Fit-to-content + dynamic zoom floor (#711 part 4) ---
+
+test('fitTransformForContent: centers and scales a bbox into the viewport', () => {
+  // 400×200 bbox into a 400×400 viewport with 24-px padding:
+  // avail 352×352 → scale = min(352/400, 352/200, 8) = 0.88.
+  const t = fitTransformForContent(
+    [
+      { x: 0, y: 0 },
+      { x: 400, y: 200 },
+    ],
+    400,
+    400,
+    24,
+    8,
+  );
+  assert.ok(t != null);
+  assert.ok(Math.abs(t.scale - 0.88) < APPROX);
+  // Content center (200, 100) must land at the viewport center (200, 200).
+  assert.ok(Math.abs(200 * t.scale + t.tx - 200) < APPROX);
+  assert.ok(Math.abs(100 * t.scale + t.ty - 200) < APPROX);
+});
+
+test('fitTransformForContent: no lower clamp — huge content fits below any floor', () => {
+  // A 40,000-px-wide building in a 400-px viewport → scale ≈ 0.0088,
+  // far below the editor's static 0.25 floor. Fit must NOT clamp.
+  const t = fitTransformForContent(
+    [
+      { x: 0, y: 0 },
+      { x: 40000, y: 200 },
+    ],
+    400,
+    400,
+    24,
+    8,
+  );
+  assert.ok(t != null);
+  assert.ok(t.scale < 0.25);
+  assert.ok(Math.abs(t.scale - 352 / 40000) < APPROX);
+});
+
+test('fitTransformForContent: caps at maxScale; guards empty/degenerate input', () => {
+  // A single point (zero-size bbox) → scale capped at maxScale, point
+  // centered.
+  const t = fitTransformForContent([{ x: 10, y: 10 }], 400, 400, 24, 8);
+  assert.ok(t != null);
+  assert.equal(t.scale, 8);
+  assert.equal(fitTransformForContent([], 400, 400, 24, 8), null);
+  assert.equal(
+    fitTransformForContent([{ x: 0, y: 0 }], 0, 400, 24, 8),
+    null,
+  );
+});
+
+test('dynamicMinScale: floor tracks half the fit scale, never above the static min', () => {
+  // Small sketch (fit well above the static floor): keep the static min.
+  assert.equal(dynamicMinScale(1.5, 0.25), 0.25);
+  // The boundary where fit*0.5 crosses the static min.
+  assert.equal(dynamicMinScale(0.5, 0.25), 0.25);
+  // Big sketch: the floor drops to fit*0.5 so the whole drawing (plus
+  // margin) is reachable by pinch — the #711 part-4 requirement.
+  assert.ok(Math.abs(dynamicMinScale(0.1, 0.25) - 0.05) < APPROX);
+  // Empty canvas / invalid fit → the static floor.
+  assert.equal(dynamicMinScale(null, 0.25), 0.25);
+  assert.equal(dynamicMinScale(0, 0.25), 0.25);
+  assert.equal(dynamicMinScale(Number.NaN, 0.25), 0.25);
+});
+
+// --- Wire parsing (#711 part 2) ---
+
+test('parseSketchVector: accepts wire snake_case AND local camelCase calibration', () => {
+  const base = {
+    version: 1,
+    vertices: [
+      { x: 0, y: 0 },
+      { x: 480, y: 0 },
+      { x: 480, y: 360 },
+      { x: 0, y: 360 },
+    ],
+    labels: [{ x: 240, y: 180, text: 'House' }],
+    closed: true,
+  };
+  const fromWire = parseSketchVector({ ...base, px_per_foot: 24 });
+  assert.ok(fromWire != null);
+  assert.equal(fromWire.pxPerFoot, 24);
+  assert.ok(Math.abs(areaSquareFeet(fromWire) - 300) < APPROX);
+  const fromQueue = parseSketchVector({ ...base, pxPerFoot: 24 });
+  assert.ok(fromQueue != null);
+  assert.equal(fromQueue.pxPerFoot, 24);
+  // docShapes normalizes the parsed doc like any other (legacy → 1 shape).
+  assert.equal(docShapes(fromWire).length, 1);
+});
+
+test('parseSketchVector: multi-shape docs round-trip; junk returns null', () => {
+  const doc = parseSketchVector({
+    version: 1,
+    px_per_foot: 24,
+    vertices: [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+    ],
+    labels: [],
+    closed: false,
+    shapes: [
+      { vertices: [{ x: 0, y: 0 }, { x: 100, y: 0 }], closed: false },
+      { vertices: [{ x: 200, y: 0 }, { x: 300, y: 0 }], closed: false },
+    ],
+  });
+  assert.ok(doc != null);
+  assert.equal(docShapes(doc).length, 2);
+  // Junk in every load-bearing spot → null, never a throw.
+  assert.equal(parseSketchVector(null), null);
+  assert.equal(parseSketchVector('nope'), null);
+  assert.equal(parseSketchVector({ version: 2 }), null);
+  assert.equal(
+    parseSketchVector({ version: 1, px_per_foot: 0, vertices: [], labels: [] }),
+    null,
+  );
+  assert.equal(
+    parseSketchVector({
+      version: 1,
+      px_per_foot: 24,
+      vertices: [{ x: 'a', y: 0 }],
+      labels: [],
+    }),
+    null,
+  );
+  assert.equal(
+    parseSketchVector({
+      version: 1,
+      px_per_foot: 24,
+      vertices: [],
+      labels: [],
+      shapes: [{ vertices: [{ x: 0, y: Number.NaN }], closed: false }],
+    }),
+    null,
+  );
 });
 
 test('shapeCentroid: degenerate inputs fall back safely', () => {

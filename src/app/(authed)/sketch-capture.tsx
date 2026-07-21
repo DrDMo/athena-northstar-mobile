@@ -61,6 +61,46 @@
  *     SUPERSEDES the previous one — the backend is idempotent on
  *     (tenant, client_id), so re-posting the same id would silently
  *     keep the OLD bytes.
+ *   - EDIT AN EXISTING SKETCH (#711): the assignment detail screen's
+ *     Edit affordance routes here with `editQueueId` (an unsynced local
+ *     capture) or `editServerId` + `assignmentId` (a synced one — the
+ *     doc comes off the server's capture list, parsed defensively via
+ *     parseSketchVector; docShapes handles legacy single-shape docs).
+ *     Saving an edit follows the same supersede pattern as a re-save:
+ *     fresh client id, same assignment/workfile linkage, the ORIGINAL
+ *     captured_at carried forward (uploaded_at records the edit — a
+ *     now() stamp would falsify the audit trail), then best-effort
+ *     delete of the superseded server row / removal of the superseded
+ *     queue row.
+ *   - SESSION ISOLATION (#711 part 2c): the screen stays mounted in the
+ *     tab navigator, so its state used to be one global scratch surface
+ *     — assignment A's sketch greeted whoever opened the editor next.
+ *     Every route into this screen now carries a fresh `entry` param
+ *     (the Capture tile and the Edit affordances both stamp one), and a
+ *     render-phase session reset keyed on entry/edit params starts a
+ *     blank document (or loads the requested capture) on every entry.
+ *     There
+ *     is deliberately no cross-entry draft: in-progress work survives a
+ *     mid-sketch tab flip (params unchanged → no reset), but re-ENTRY
+ *     always starts clean, so one assignment's sketch can never
+ *     resurface under another. Backing out with unsaved strokes asks
+ *     before discarding.
+ *   - START-POINT SNAPPING (#711 part 3): a tapped vertex resolves
+ *     through resolveSnapPoint — nearest existing vertex of ANY shape
+ *     within ~24 dp, else nearest point ON any wall within ~16 dp, else
+ *     the grid (when snap is on). Tolerances are dp ÷ zoom, so the
+ *     fingertip radius is constant on screen. A gold ring shows the
+ *     live snap candidate while the finger is down and flashes on the
+ *     just-placed vertex. And when the active shape holds exactly ONE
+ *     vertex, the distance pad MOVES that start point instead of
+ *     drawing a wall (the pad says so) — fine placement without finger
+ *     precision; with ≥2 vertices the pad draws segments as before.
+ *   - DYNAMIC ZOOM FLOOR (#711 part 4): the old fixed MIN_SCALE made a
+ *     large sketch un-viewable — recenter could fit it, but the next
+ *     pinch snapped back to the floor. The floor is now
+ *     dynamicMinScale(fit scale): min(static floor, fit × 0.5),
+ *     recomputed as the sketch grows. Pan has never been clamped to a
+ *     world rect here, so panning at the floor is free.
  *
  * Calibration model (real feet are INVARIANT): `pxPerFoot` is stable
  * state, calibrated from grid spacing ÷ feet-per-square. When the user
@@ -85,7 +125,7 @@
 import { Ionicons } from '@react-native-vector-icons/ionicons/static';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import {
   type ComponentProps,
   type ReactElement,
@@ -118,7 +158,7 @@ import Svg, { Circle, G, Line, Path, Text as SvgText } from 'react-native-svg';
 import { captureRef } from 'react-native-view-shot';
 
 import { Brand, Radius, Spacing } from '@/constants/theme';
-import { deleteCapture } from '@/lib/api';
+import { deleteCapture, listAssignmentCaptures } from '@/lib/api';
 import { pickAssignment } from '@/lib/assignment-picker';
 import {
   type CaptureMeta,
@@ -132,16 +172,24 @@ import {
   type Dir8,
   docFromShapes,
   docShapes,
+  dynamicMinScale,
   endpointOffset,
+  fitTransformForContent,
   hasSelfIntersection,
+  parseSketchVector,
   pxPerFootFromGrid,
   rescaleDoc,
+  resolveSnapPoint,
   shapeAreaSquareFeet,
   shapeCentroid,
   shapeSegments,
+  type SketchDoc,
   type SketchLabel,
+  type SketchMetaWire,
   type SketchShape,
   type SketchVertex,
+  type SnapResult,
+  snapToGrid,
 } from '@/lib/sketch-model';
 import { syncNow } from '@/lib/sync';
 import { sealCaptureFile } from '@/lib/vault';
@@ -168,12 +216,19 @@ type Transform = { tx: number; ty: number; scale: number };
  *          pushed/popped at the end) and restores the duplicate end
  *          vertex the close dropped, if any (a paced perimeter often
  *          lands exactly on the start point).
+ *   - 'm'  the shape's lone start vertex was MOVED by the distance pad
+ *          (#711 part 3). Recorded as the DELTA applied (not the old
+ *          position — rapid arrow taps outrun React commits, and a
+ *          closure-read position goes stale; subtracting a delta is
+ *          order-safe). Undo subtracts it. Shape recorded by index like
+ *          'c', for the same stability reason.
  */
 type Action =
   | { t: 'v' } // vertex added to the active shape
   | { t: 'ns' } // new shape started with its first vertex
   | { t: 'l' } // label added
-  | { t: 'c'; shape: number; dropped?: SketchVertex }; // shape closed
+  | { t: 'c'; shape: number; dropped?: SketchVertex } // shape closed
+  | { t: 'm'; shape: number; dx: number; dy: number }; // start vertex moved
 
 /** On-screen pixel spacing per grid density. 'off' → no grid drawn. */
 const GRID_SPACING: Record<SketchGridSize, number> = {
@@ -214,10 +269,29 @@ const STROKE_COLOR = Brand.navyDeep;
 const STROKE_WIDTH = 3;
 const GRID_COLOR = '#e2ddcc';
 const FILL_COLOR = 'rgba(15,29,58,0.06)';
+/**
+ * STATIC zoom floor — a small sketch's floor, and the ceiling of the
+ * dynamic floor (#711 part 4): the effective minimum each frame is
+ * dynamicMinScale(fit scale, MIN_SCALE), so a sketch too big for this
+ * floor can still be pinched out to half its fit-all view.
+ */
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 8;
 /** Cap grid line count when zoomed way out so we never draw thousands. */
 const MAX_GRID_LINES = 400;
+/** Screen padding around the content in fit-to-content views. */
+const FIT_PADDING = 24;
+/**
+ * Start-point snap tolerances (#711 part 3), in SCREEN dp — divided by
+ * the live zoom before hitting resolveSnapPoint (which works in world
+ * px), so the fingertip radius is constant on screen at every zoom.
+ * Vertex beats wall beats grid; the vertex radius is the generous one
+ * because continuing from an existing corner is the common intent.
+ */
+const SNAP_VERTEX_DP = 24;
+const SNAP_SEGMENT_DP = 16;
+/** How long the snap ring lingers on a just-placed vertex. */
+const SNAP_RING_MS = 650;
 
 /** Screen-relative arrow glyphs for the 8-direction precise-entry pad. */
 const ARROW_GLYPH: Record<Dir8, string> = {
@@ -236,8 +310,13 @@ function freshShapes(): SketchShape[] {
   return [{ vertices: [], closed: false }];
 }
 
-function clampScale(s: number): number {
-  return Math.max(MIN_SCALE, Math.min(s, MAX_SCALE));
+/**
+ * Clamp a zoom to [minScale, MAX_SCALE]. The floor is a parameter
+ * (#711 part 4): callers pass the DYNAMIC minimum so pinch can reach a
+ * big sketch's fit-all view instead of fighting a fixed 0.25.
+ */
+function clampScale(s: number, minScale: number = MIN_SCALE): number {
+  return Math.max(minScale, Math.min(s, MAX_SCALE));
 }
 
 /** SVG path `d` for one polyline; appends `Z` when the shape is closed. */
@@ -273,15 +352,14 @@ function gridBoundsFor(
 }
 
 /**
- * Fit-to-content transform: the bounding box of the given points (pass
- * EVERY shape's vertices flattened, plus label anchors — #686), padded
- * ~24 screen px, scaled and centered into the canvas. Shared by the
- * Save rasterization (saving the as-displayed viewport cropped or
- * blanked whatever the user had panned/zoomed away from) and the
- * Recenter button (#686), so "what recenter shows" and "what save
- * captures" can never disagree. Scale is capped at MAX_SCALE so a tiny
- * sketch isn't blown up absurdly, but has NO lower clamp — a building
- * bigger than the viewport must shrink to fit rather than crop.
+ * Fit-to-content transform over every shape's vertices plus label
+ * anchors (#686). Shared by the Save rasterization (saving the
+ * as-displayed viewport cropped or blanked whatever the user had
+ * panned/zoomed away from), the Recenter button, the on-load framing of
+ * an edited sketch (#711 part 2), and the dynamic zoom floor (#711
+ * part 4) — the fit math itself now lives in sketch-model
+ * ({@link fitTransformForContent}) so the floor is unit-testable and
+ * can never disagree with what recenter shows or save captures.
  */
 function fitTransformForCapture(
   vertices: SketchVertex[],
@@ -289,29 +367,13 @@ function fitTransformForCapture(
   w: number,
   h: number,
 ): Transform | null {
-  if (w <= 0 || h <= 0) return null;
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const p of [...vertices, ...labels]) {
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.y > maxY) maxY = p.y;
-  }
-  if (!Number.isFinite(minX)) return null; // no content
-  const pad = 24;
-  const bw = Math.max(maxX - minX, 1); // guard zero-size bbox (one point)
-  const bh = Math.max(maxY - minY, 1);
-  const availW = Math.max(w - pad * 2, 1);
-  const availH = Math.max(h - pad * 2, 1);
-  const s = Math.min(availW / bw, availH / bh, MAX_SCALE);
-  return {
-    scale: s,
-    tx: (w - bw * s) / 2 - minX * s,
-    ty: (h - bh * s) / 2 - minY * s,
-  };
+  return fitTransformForContent(
+    [...vertices, ...labels],
+    w,
+    h,
+    FIT_PADDING,
+    MAX_SCALE,
+  );
 }
 
 /**
@@ -326,6 +388,79 @@ function parseDistanceFeet(text: string): number | null {
   const feet = parseFloat(normalized);
   return Number.isFinite(feet) && feet > 0 ? feet : null;
 }
+
+/** Defensive read of a stored grid size — junk falls back to medium. */
+function normalizeGridSize(v: unknown): SketchGridSize {
+  return v === 'off' || v === 'fine' || v === 'medium' || v === 'coarse'
+    ? v
+    : 'medium';
+}
+
+/** Defensive read of a stored feet-per-square — junk falls back to 1. */
+function normalizeScaleFeet(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 1;
+}
+
+/**
+ * Convert a server capture's opaque snake_case `meta.sketch` into the
+ * local camelCase {@link SketchMeta} (#711 part 2) — the KNOWN fields
+ * only. The vector is deliberately left off: the caller parses it via
+ * parseSketchVector and re-writes it on save. Unknown/future wire keys
+ * are not carried through this path (the outbound sync layer builds the
+ * wire from typed fields); editing an unsynced QUEUE row spreads its
+ * original camelCase meta instead, which does preserve them.
+ */
+function sketchMetaFromWire(w: SketchMetaWire | undefined): SketchMeta {
+  const out: SketchMeta = {};
+  if (!w) return out;
+  out.gridSize = normalizeGridSize(w.grid_size);
+  out.scaleFeetPerSquare = normalizeScaleFeet(w.scale_feet_per_square);
+  out.snapEnabled = w.snap_enabled === true;
+  if (
+    w.gps &&
+    typeof w.gps.lat === 'number' &&
+    typeof w.gps.lng === 'number' &&
+    Number.isFinite(w.gps.lat) &&
+    Number.isFinite(w.gps.lng)
+  ) {
+    out.gps = {
+      lat: w.gps.lat,
+      lng: w.gps.lng,
+      accuracyMeters:
+        typeof w.gps.accuracy_m === 'number' ? w.gps.accuracy_m : undefined,
+      capturedAt:
+        typeof w.gps.captured_at === 'string'
+          ? w.gps.captured_at
+          : new Date().toISOString(),
+    };
+  }
+  if (typeof w.heading_deg === 'number' && Number.isFinite(w.heading_deg)) {
+    out.headingDeg = w.heading_deg;
+  }
+  return out;
+}
+
+/**
+ * Everything the session loader restores when an existing sketch is
+ * opened for editing (#711 part 2) — the parsed doc plus the identity +
+ * provenance the superseding save must carry forward.
+ */
+type LoadedSketch = {
+  doc: SketchDoc;
+  /** camelCase base `meta.sketch` the next save spreads under its own fields. */
+  base: SketchMeta;
+  /** Original field-collection time — carried forward on save (audit). */
+  capturedAt: string;
+  caption?: string;
+  assignmentId: string | null;
+  workfileId?: string;
+  /** Local queue row being superseded, when the capture lives on-device. */
+  queueId: string | null;
+  /** Server row to best-effort delete after the superseding save. */
+  serverId: string | null;
+  /** Capture-level geotag, restored as the editor's pinned site. */
+  geo?: CaptureMeta['geo'];
+};
 
 /** Compact segmented control shared by the grid / scale pickers. */
 function Segmented<T extends string | number>({
@@ -398,6 +533,17 @@ export default function SketchCaptureScreen() {
   const router = useRouter();
   const canvasRef = useRef<View>(null);
 
+  // #711 part 2: how this editing session was entered. `entry` is a
+  // fresh timestamp stamped by EVERY route into this screen (the
+  // Capture tile and both Edit affordances), so the session effect
+  // below re-keys on each entry even when the edit target repeats.
+  const params = useLocalSearchParams<{
+    entry?: string;
+    editQueueId?: string;
+    editServerId?: string;
+    assignmentId?: string;
+  }>();
+
   // --- Vector document state (#686: a LIST of shapes, active = last) ---
   const [shapes, setShapes] = useState<SketchShape[]>(freshShapes);
   const [labels, setLabels] = useState<SketchLabel[]>([]);
@@ -418,6 +564,21 @@ export default function SketchCaptureScreen() {
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [busy, setBusy] = useState(false);
   const [saveNote, setSaveNote] = useState<string | null>(null);
+  // #711: loading overlay while an edit target is fetched/parsed, and
+  // whether the document has unsaved edits (gates the Cancel confirm).
+  const [loadingDoc, setLoadingDoc] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  // #711 part 2: one-shot "frame the loaded sketch" request, honored
+  // during render once the canvas has a measured size (layout can land
+  // before or after the doc loads).
+  const [wantFit, setWantFit] = useState(false);
+  // #711 part 3: the live snap-feedback ring — the candidate target
+  // while a finger is down (no `flash` stamp), or the just-placed
+  // vertex for a beat after (`flash` set → the linger effect below
+  // clears it).
+  const [snapRing, setSnapRing] = useState<
+    (SnapResult & { flash?: number }) | null
+  >(null);
   // Android inline-label draft (iOS uses Alert.prompt).
   const [labelDraft, setLabelDraft] = useState<{
     x: number;
@@ -429,8 +590,27 @@ export default function SketchCaptureScreen() {
   // save mints a FRESH id that supersedes the previous one (same
   // assignment, no re-pick) — see onSave for why update-in-place loses
   // data against the backend's client_id idempotency. Clear resets both.
+  // #711 (edit-existing) extends the identity set:
+  //   - supersedeServerIdRef: server row to best-effort delete after
+  //     the NEXT save (editing a synced capture with no local row).
+  //   - capturedAtRef: the ORIGINAL field-collection time, stamped on
+  //     the first save and carried across every supersede — the backend
+  //     treats captured_at as when the sketch was collected in the
+  //     field; uploaded_at records edits, so re-stamping now() on a
+  //     re-save would falsify the audit trail.
+  //   - captionRef / workfileIdRef / baseSketchRef: provenance carried
+  //     from the edited capture onto its superseding save.
+  //   - assignmentPickedRef: whether the assignment question is already
+  //     answered (picked on first save, or inherited from the edit
+  //     target) — an edit must never re-run the picker.
   const savedIdRef = useRef<string | null>(null);
   const savedAssignmentIdRef = useRef<string | null>(null);
+  const supersedeServerIdRef = useRef<string | null>(null);
+  const capturedAtRef = useRef<string | null>(null);
+  const captionRef = useRef<string | null>(null);
+  const workfileIdRef = useRef<string | null>(null);
+  const baseSketchRef = useRef<SketchMeta | null>(null);
+  const assignmentPickedRef = useRef(false);
 
   // --- Carried-over controls (grid / scale / snap / GPS / heading) ---
   const [gridSize, setGridSize] = useState<SketchGridSize>('medium');
@@ -458,6 +638,218 @@ export default function SketchCaptureScreen() {
   const headingSubRef =
     useRef<Awaited<ReturnType<typeof Location.watchHeadingAsync>> | null>(null);
   const lastHeadingRef = useRef<number | null>(null);
+
+  // --- Session reset + loader (#711 part 2) ---
+  // Keyed on the ROUTE-entry identity: every push into this screen
+  // stamps a fresh `entry` param, so a session starts once per entry
+  // (blank or edit) but NOT on a mid-sketch tab flip (params unchanged
+  // — work in progress survives). The reset is applied DURING RENDER
+  // (React's "adjusting state when a prop changes" pattern), not in an
+  // effect: an effect would commit one frame of the PREVIOUS session's
+  // sketch before wiping it, and that flash of assignment A's drawing
+  // inside assignment B's entry is exactly what part 2c forbids. React
+  // re-renders immediately after a render-phase setState, before
+  // anything paints.
+  const sessionKey = `${params.entry ?? ''}|${params.editQueueId ?? ''}|${params.editServerId ?? ''}|${params.assignmentId ?? ''}`;
+  const isEditEntry = Boolean(params.editQueueId || params.editServerId);
+  const [activeSession, setActiveSession] = useState<string | null>(null);
+  if (activeSession !== sessionKey) {
+    // Blank slate: document, view, calibration, pins — the guarantee
+    // that one assignment's sketch can never resurface under another.
+    setActiveSession(sessionKey);
+    setShapes(freshShapes());
+    setLabels([]);
+    setHistory([]);
+    setLabelDraft(null);
+    setDistanceText('');
+    setTransform({ tx: 0, ty: 0, scale: 1 });
+    setSnapRing(null);
+    setDirty(false);
+    setSaveNote(null);
+    setWantFit(false);
+    setPinnedGeo(null);
+    setPinnedAt(null);
+    setGridSize('medium');
+    setScaleFeet(1);
+    setSnapEnabled(false);
+    setPxPerFoot(pxPerFootFromGrid(GRID_SPACING.medium, 1));
+    // For an edit entry the loading veil goes up in this SAME first
+    // frame; the loader effect below takes it down.
+    setLoadingDoc(isEditEntry);
+    setBusy(isEditEntry);
+  }
+
+  // The async half of a session start: reset the identity refs, then —
+  // for an edit entry — resolve the capture + its vector doc. Runs once
+  // per session, post-commit; the render-phase reset above has already
+  // blanked everything visible by then.
+  useEffect(() => {
+    let cancelled = false;
+
+    lastCalibratedSpacingRef.current = GRID_SPACING.medium;
+    savedIdRef.current = null;
+    savedAssignmentIdRef.current = null;
+    supersedeServerIdRef.current = null;
+    capturedAtRef.current = null;
+    captionRef.current = null;
+    workfileIdRef.current = null;
+    baseSketchRef.current = null;
+    assignmentPickedRef.current = false;
+
+    const editQueueId = params.editQueueId || null;
+    const editServerId = params.editServerId || null;
+    const routeAssignmentId = params.assignmentId || null;
+    if (!editQueueId && !editServerId) return;
+
+    /** Push a resolved capture into the editor as the session's doc. */
+    const applyLoaded = (loaded: LoadedSketch) => {
+      // Settings first, aligning the visible grid with the doc's
+      // calibration: with the grid ON, the grid-derived pxPerFoot is
+      // authoritative — rescale the doc to it (real feet invariant, and
+      // grid squares line up with drawn walls); with it OFF, the doc's
+      // own calibration stands and only the remembered spacing moves.
+      const gs = normalizeGridSize(loaded.base.gridSize);
+      const sf = normalizeScaleFeet(loaded.base.scaleFeetPerSquare);
+      let doc = loaded.doc;
+      let ppf = doc.pxPerFoot;
+      const spacingPx = GRID_SPACING[gs];
+      if (spacingPx > 0) {
+        const expected = pxPerFootFromGrid(spacingPx, sf);
+        if (expected > 0) {
+          doc = rescaleDoc(doc, expected / ppf);
+          ppf = expected;
+        }
+        lastCalibratedSpacingRef.current = spacingPx;
+      } else {
+        lastCalibratedSpacingRef.current = ppf * sf;
+      }
+      setGridSize(gs);
+      setScaleFeet(sf);
+      setSnapEnabled(loaded.base.snapEnabled === true);
+      setPxPerFoot(ppf);
+
+      // The document itself. docShapes normalizes a legacy (pre-#686)
+      // single-shape doc, so there is always ≥1 shape to be active.
+      setShapes(docShapes(doc));
+      setLabels(doc.labels);
+      setHistory([]);
+
+      // Pinned site + heading: prefer the sketch's own pin, else the
+      // capture-level geotag. The live compass overrides the restored
+      // heading as soon as it reports.
+      if (loaded.base.gps) {
+        setPinnedGeo({
+          lat: loaded.base.gps.lat,
+          lon: loaded.base.gps.lng,
+          accuracyMeters: loaded.base.gps.accuracyMeters,
+        });
+        setPinnedAt(loaded.base.gps.capturedAt ?? null);
+      } else if (loaded.geo) {
+        setPinnedGeo(loaded.geo);
+      }
+      if (loaded.base.headingDeg != null) setHeading(loaded.base.headingDeg);
+
+      // Identity: the next save SUPERSEDES this capture — same
+      // assignment/workfile linkage, original captured_at, no re-pick.
+      savedIdRef.current = loaded.queueId;
+      supersedeServerIdRef.current = loaded.serverId;
+      savedAssignmentIdRef.current = loaded.assignmentId;
+      assignmentPickedRef.current = true;
+      capturedAtRef.current = loaded.capturedAt;
+      captionRef.current = loaded.caption ?? null;
+      workfileIdRef.current = loaded.workfileId ?? null;
+      baseSketchRef.current = loaded.base;
+
+      // Frame the whole loaded drawing once the canvas has a size.
+      setWantFit(true);
+    };
+
+    // Resolve the capture + its vector doc. The render-phase reset
+    // already raised `busy`, which gates every mutation path — the load
+    // window can't race a stray tap.
+    (async (): Promise<LoadedSketch> => {
+      const queue = await loadQueue();
+      // A local queue row is the freshest source — and keeps editing a
+      // just-saved (still unsynced) sketch fully offline-capable. An
+      // edit of a SYNCED capture also prefers its local mirror when one
+      // is still retained (serverId is stamped at upload time).
+      const localRow = editQueueId
+        ? queue.find((it) => it.id === editQueueId)
+        : queue.find((it) => it.serverId === editServerId);
+      if (localRow) {
+        const doc = parseSketchVector(localRow.sketch?.vector);
+        if (!doc) throw new Error('This sketch has no editable drawing data.');
+        return {
+          doc,
+          // Spread so unknown keys on the stored meta survive the
+          // supersede — this row is already camelCase SketchMeta.
+          base: { ...localRow.sketch },
+          capturedAt: localRow.capturedAt,
+          caption: localRow.caption,
+          assignmentId: localRow.assignmentId ?? routeAssignmentId,
+          workfileId: localRow.workfileId,
+          queueId: localRow.id,
+          // The row's serverId (if it synced) is read again at save
+          // time — the supersede path deletes the server copy then.
+          serverId: null,
+          geo: localRow.geo,
+        };
+      }
+      if (editQueueId) {
+        throw new Error('This sketch is no longer on this device.');
+      }
+      if (!routeAssignmentId) {
+        throw new Error('Missing the assignment for this sketch.');
+      }
+      const rows = await listAssignmentCaptures(routeAssignmentId);
+      const row = rows.find((r) => r.id === editServerId);
+      if (!row) throw new Error('This sketch is no longer on the server.');
+      const doc = parseSketchVector(row.sketch?.vector);
+      if (!doc) throw new Error('This sketch has no editable drawing data.');
+      const geo =
+        row.geo &&
+        typeof row.geo.lat === 'number' &&
+        typeof row.geo.lon === 'number'
+          ? {
+              lat: row.geo.lat,
+              lon: row.geo.lon,
+              accuracyMeters: row.geo.accuracyMeters,
+            }
+          : undefined;
+      return {
+        doc,
+        base: sketchMetaFromWire(row.sketch),
+        capturedAt: row.captured_at,
+        caption: row.caption,
+        assignmentId: row.case_id ?? routeAssignmentId,
+        workfileId: row.workfile_id,
+        queueId: null,
+        serverId: row.id,
+        geo,
+      };
+    })()
+      .then((loaded) => {
+        if (!cancelled) applyLoaded(loaded);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        Alert.alert("Couldn't open sketch", (e as Error).message, [
+          { text: 'OK', onPress: () => router.back() },
+        ]);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingDoc(false);
+          setBusy(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Keyed on the entry identity alone — params/router are read from
+    // the closure the entry that created them rendered with.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionKey]);
 
   const spacing = GRID_SPACING[gridSize];
   const snapActive = snapEnabled && spacing > 0;
@@ -495,6 +887,21 @@ export default function SketchCaptureScreen() {
   const activeRender = shapeRender[activeIndex];
   const hasContent = allVertices.length > 0 || labels.length > 0;
 
+  // #711 part 4: the DYNAMIC zoom-out floor — half the fit-all-content
+  // scale when that dips under the static minimum, recomputed as the
+  // sketch grows. Consumed by the pinch clamp so a big drawing's fit
+  // view (which recenter can reach) is also reachable — and holdable —
+  // by pinching, instead of snapping back to a fixed floor.
+  const minScale = useMemo(
+    () =>
+      dynamicMinScale(
+        fitTransformForCapture(allVertices, labels, size.w, size.h)?.scale ??
+          null,
+        MIN_SCALE,
+      ),
+    [allVertices, labels, size.w, size.h],
+  );
+
   /**
    * Recalibrate to (spacingPx, feetPerSquare), keeping real-world feet
    * INVARIANT: all stored geometry — EVERY shape and label — is rescaled
@@ -517,19 +924,24 @@ export default function SketchCaptureScreen() {
         // coordinates in the old pixel space — move them by the same
         // factor, or undoing a close after a grid/scale change restores
         // the vertex at its stale position and bends the wall (review
-        // catch; same invariant as the geometry above).
+        // catch; same invariant as the geometry above). The 'm' move
+        // deltas (#711) are world-space too.
         setHistory((h) =>
-          h.map((a) =>
-            a.t === 'c' && a.dropped
-              ? {
-                  ...a,
-                  dropped: {
-                    x: a.dropped.x * factor,
-                    y: a.dropped.y * factor,
-                  },
-                }
-              : a,
-          ),
+          h.map((a) => {
+            if (a.t === 'c' && a.dropped) {
+              return {
+                ...a,
+                dropped: {
+                  x: a.dropped.x * factor,
+                  y: a.dropped.y * factor,
+                },
+              };
+            }
+            if (a.t === 'm') {
+              return { ...a, dx: a.dx * factor, dy: a.dy * factor };
+            }
+            return a;
+          }),
         );
         // A pending label draft anchor is world-space too.
         setLabelDraft((d) =>
@@ -602,12 +1014,47 @@ export default function SketchCaptureScreen() {
     y: (sy - transform.ty) / transform.scale,
   });
   const snapWorld = (p: SketchVertex): SketchVertex =>
-    snapActive
-      ? {
-          x: Math.round(p.x / spacing) * spacing,
-          y: Math.round(p.y / spacing) * spacing,
-        }
-      : p;
+    snapActive ? snapToGrid(p, spacing) : p;
+
+  // #711 part 3: where a draw-mode point actually lands — existing
+  // vertex, then wall, then grid (see resolveSnapPoint). Tolerances are
+  // screen dp ÷ zoom so the fingertip radius is constant on screen. The
+  // active open shape's LAST vertex (the anchor the next wall extends
+  // from) is excluded, or a tap near it would snap back and mint a
+  // zero-length wall.
+  const resolveDrawPoint = (world: SketchVertex): SnapResult => {
+    const anchor =
+      !activeShape.closed && activeShape.vertices.length > 0
+        ? activeShape.vertices[activeShape.vertices.length - 1]
+        : undefined;
+    return resolveSnapPoint(world, shapes, {
+      vertexTolerance: SNAP_VERTEX_DP / transform.scale,
+      segmentTolerance: SNAP_SEGMENT_DP / transform.scale,
+      gridSpacing: snapActive ? spacing : 0,
+      exclude: anchor ? [anchor] : undefined,
+    });
+  };
+
+  // Ring feedback for a resolved placement: vertex/wall snaps are the
+  // meaningful signal (a ring on every grid tick would be noise). The
+  // `flash` stamp marks it as a placement ring for the linger effect.
+  const flashSnapRing = (r: SnapResult) => {
+    if (r.kind === 'vertex' || r.kind === 'segment') {
+      setSnapRing({ ...r, flash: Date.now() });
+    } else {
+      setSnapRing(null);
+    }
+  };
+
+  // A flashed (just-placed) ring clears itself after a beat; a preview
+  // ring (finger still down, no `flash`) is cleared by the gesture's
+  // finalize instead. Effect cleanup retires the timer on re-flash and
+  // on unmount.
+  useEffect(() => {
+    if (snapRing?.flash == null) return;
+    const timer = setTimeout(() => setSnapRing(null), SNAP_RING_MS);
+    return () => clearTimeout(timer);
+  }, [snapRing]);
 
   // --- Mutations (all target the ACTIVE = last shape) ---
   const addVertexWorld = useCallback((p: SketchVertex) => {
@@ -617,6 +1064,7 @@ export default function SketchCaptureScreen() {
       ),
     );
     setHistory((h) => [...h, { t: 'v' }]);
+    setDirty(true);
     void Haptics.selectionAsync();
   }, []);
 
@@ -624,12 +1072,14 @@ export default function SketchCaptureScreen() {
   const startShapeWorld = useCallback((p: SketchVertex) => {
     setShapes((ss) => [...ss, { vertices: [p], closed: false }]);
     setHistory((h) => [...h, { t: 'ns' }]);
+    setDirty(true);
     void Haptics.selectionAsync();
   }, []);
 
   const addLabel = useCallback((l: SketchLabel) => {
     setLabels((ls) => [...ls, l]);
     setHistory((h) => [...h, { t: 'l' }]);
+    setDirty(true);
     setMode('draw');
     void Haptics.selectionAsync();
   }, []);
@@ -670,10 +1120,25 @@ export default function SketchCaptureScreen() {
   useEffect(() => {
     const prev = prevVertexCountRef.current;
     prevVertexCountRef.current = allVertices.length;
-    if (allVertices.length > prev && allVertices.length > 0) {
+    // Growth of 1–2 is a user placement (tap, arrow, the two-point seed,
+    // an undo-close restore). A bigger jump is a whole LOADED document
+    // (#711) — that one gets framed by the fit below, not panned.
+    const added = allVertices.length - prev;
+    if (added >= 1 && added <= 2 && allVertices.length > 0) {
       ensureVisibleWorldPoint(allVertices[allVertices.length - 1]);
     }
   }, [allVertices, ensureVisibleWorldPoint]);
+
+  // #711 part 2: one-shot framing of a freshly LOADED sketch, honored
+  // once both the doc and a measured canvas exist (layout can land in
+  // either order). Applied DURING RENDER like the session reset, so the
+  // loaded drawing's first painted frame is already fitted — never a
+  // flash of it sitting at the identity transform.
+  if (wantFit && size.w > 0 && size.h > 0 && hasContent) {
+    setWantFit(false);
+    const fit = fitTransformForCapture(allVertices, labels, size.w, size.h);
+    if (fit) setTransform(fit);
+  }
 
   const promptForLabel = useCallback(
     (world: SketchVertex) => {
@@ -701,19 +1166,26 @@ export default function SketchCaptureScreen() {
         promptForLabel(world);
         return;
       }
-      // Draw mode. A closed active shape means the pen is UP — the next
-      // tap relocates it by starting a NEW outline right there (#686),
-      // instead of the old dead-end where taps were ignored until Undo.
+      // Draw mode: resolve the landing point through the snap ladder
+      // (#711 part 3 — vertex, wall, grid) and flash the ring feedback
+      // on a vertex/wall hit. A closed active shape means the pen is UP
+      // — the next tap relocates it by starting a NEW outline right
+      // there (#686), instead of the old dead-end where taps were
+      // ignored until Undo. Starting ON existing geometry is exactly
+      // when the vertex/wall snap earns its keep.
+      const resolved = resolveDrawPoint(world);
+      flashSnapRing(resolved);
       if (activeShape.closed) {
-        startShapeWorld(snapWorld(world));
+        startShapeWorld(resolved.point);
         return;
       }
-      addVertexWorld(snapWorld(world));
+      addVertexWorld(resolved.point);
     },
-    // screenToWorld / snapWorld read transform/snap from the current
-    // render closure; listing the primitives keeps them fresh.
+    // screenToWorld / resolveDrawPoint read transform/shapes/snap from
+    // the current render closure; listing the primitives keeps them
+    // fresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [busy, mode, activeShape.closed, transform, snapActive, spacing, promptForLabel, addVertexWorld, startShapeWorld],
+    [busy, mode, activeShape, shapes, transform, snapActive, spacing, promptForLabel, addVertexWorld, startShapeWorld],
   );
 
   const onArrow = useCallback(
@@ -756,6 +1228,41 @@ export default function SketchCaptureScreen() {
           ),
         );
         setHistory((h) => [...h, { t: 'v' }, { t: 'v' }]);
+      } else if (activeShape.vertices.length === 1) {
+        // #711 part 3: with exactly ONE vertex down, the pad MOVES that
+        // start point by the entered distance instead of drawing a wall
+        // (the pad card says so) — fine placement of a shape's start
+        // without fingertip precision. Recorded as a DELTA ('m'), not a
+        // from-position: rapid arrow taps outrun React commits, and a
+        // closure-read "previous position" would go stale; undoing a
+        // delta is order-safe. Read the vertex INSIDE the updater for
+        // the same reason.
+        const shapeIndex = activeIndex;
+        setShapes((ss) =>
+          ss.map((s, i) =>
+            i === shapeIndex && s.vertices.length > 0
+              ? {
+                  ...s,
+                  vertices: [
+                    {
+                      x: s.vertices[0].x + dx,
+                      y: s.vertices[0].y + dy,
+                    },
+                    ...s.vertices.slice(1),
+                  ],
+                }
+              : s,
+          ),
+        );
+        setHistory((h) => [...h, { t: 'm', shape: shapeIndex, dx, dy }]);
+        // The count-gated auto-pan ignores moves — keep the moved start
+        // on screen ourselves, and mark it with the placement ring.
+        const moved = {
+          x: activeShape.vertices[0].x + dx,
+          y: activeShape.vertices[0].y + dy,
+        };
+        ensureVisibleWorldPoint(moved);
+        flashSnapRing({ point: moved, kind: 'vertex' });
       } else {
         // Read the anchor INSIDE the functional updater — a closure-
         // captured `last` goes stale when arrows land faster than React
@@ -772,10 +1279,11 @@ export default function SketchCaptureScreen() {
         );
         setHistory((h) => [...h, { t: 'v' }]);
       }
+      setDirty(true);
       void Haptics.selectionAsync();
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [busy, activeShape.closed, activeShape.vertices.length, distanceText, pxPerFoot, size, transform, snapActive, spacing],
+    [busy, activeShape, activeIndex, distanceText, pxPerFoot, size, transform, snapActive, spacing, ensureVisibleWorldPoint],
   );
 
   const onCloseShape = useCallback(() => {
@@ -814,6 +1322,7 @@ export default function SketchCaptureScreen() {
         ? { t: 'c', shape: shapeIndex, dropped: last }
         : { t: 'c', shape: shapeIndex },
     ]);
+    setDirty(true);
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   }, [busy, activeShape, activeIndex]);
 
@@ -853,10 +1362,32 @@ export default function SketchCaptureScreen() {
             : s,
         ),
       );
+    } else if (top.t === 'm') {
+      // Undo a pad-move of a start vertex (#711): subtract the recorded
+      // delta from vertex 0 of THAT shape. By the time 'm' surfaces,
+      // reverse unwinding has already popped anything added after it,
+      // so the shape is back to the single-vertex state it was moved in.
+      setShapes((ss) =>
+        ss.map((s, i) =>
+          i === top.shape && s.vertices.length > 0
+            ? {
+                ...s,
+                vertices: [
+                  {
+                    x: s.vertices[0].x - top.dx,
+                    y: s.vertices[0].y - top.dy,
+                  },
+                  ...s.vertices.slice(1),
+                ],
+              }
+            : s,
+        ),
+      );
     } else if (top.t === 'l') {
       setLabels((l) => l.slice(0, -1));
     }
     setHistory((h) => h.slice(0, -1));
+    setDirty(true);
     void Haptics.selectionAsync();
   }, [busy, history]);
 
@@ -867,16 +1398,27 @@ export default function SketchCaptureScreen() {
       setLabels([]);
       setHistory([]);
       setLabelDraft(null);
+      setSnapRing(null);
       // Clear starts a NEW document: reset the save identity so the next
       // save mints a fresh capture id and re-runs the assignment picker,
-      // instead of superseding the sketch that was just saved.
+      // instead of superseding the sketch that was just saved — or, in
+      // an edit session (#711), the capture being edited: the original
+      // stays exactly as it was.
       savedIdRef.current = null;
       savedAssignmentIdRef.current = null;
+      supersedeServerIdRef.current = null;
+      capturedAtRef.current = null;
+      captionRef.current = null;
+      workfileIdRef.current = null;
+      baseSketchRef.current = null;
+      assignmentPickedRef.current = false;
+      // A blank canvas has nothing left to lose — back out freely.
+      setDirty(false);
       void Haptics.selectionAsync();
     };
     Alert.alert(
       'Clear sketch?',
-      savedIdRef.current
+      savedIdRef.current || supersedeServerIdRef.current
         ? 'This starts a new sketch. The sketch you saved stays saved.'
         : 'This removes every point and label.',
       [
@@ -899,6 +1441,30 @@ export default function SketchCaptureScreen() {
     void Haptics.selectionAsync();
   }, [allVertices, labels, size.w, size.h]);
 
+  /**
+   * Back out of the editor (#711 part 2c): with unsaved strokes on the
+   * canvas, confirm before discarding — the session loader starts every
+   * ENTRY clean, so whatever isn't saved now is gone for good.
+   */
+  const onCancel = useCallback(() => {
+    if (dirty && hasContent) {
+      Alert.alert(
+        'Discard unsaved changes?',
+        'This sketch has strokes that haven’t been saved.',
+        [
+          { text: 'Keep editing', style: 'cancel' },
+          {
+            text: 'Discard',
+            style: 'destructive',
+            onPress: () => router.back(),
+          },
+        ],
+      );
+      return;
+    }
+    router.back();
+  }, [dirty, hasContent, router]);
+
   // --- Gestures (rebuilt each render so closures see current state) ---
   //
   // Ownership: PAN owns one-finger drag (Pan/Zoom mode only, INCREMENTAL
@@ -920,8 +1486,22 @@ export default function SketchCaptureScreen() {
       // immediately so a two-finger tap can't drop a stray point.
       if (e.numberOfTouches > 1) mgr.fail();
     })
+    .onBegin((e) => {
+      // #711 part 3: live snap preview — ring the candidate target the
+      // moment the finger lands, so the appraiser sees where the point
+      // will snap BEFORE committing the tap.
+      if (mode === 'draw' && !busy) {
+        const r = resolveDrawPoint(screenToWorld(e.x, e.y));
+        if (r.kind === 'vertex' || r.kind === 'segment') setSnapRing(r);
+      }
+    })
     .onEnd((e, success) => {
       if (success) onCanvasTap(e.x, e.y);
+    })
+    .onFinalize((_e, success) => {
+      // A failed tap (drag past slop, second finger) drops its preview;
+      // a successful one just re-flashed the ring with a linger timer.
+      if (!success) setSnapRing(null);
     });
 
   const panGesture = Gesture.Pan()
@@ -957,7 +1537,10 @@ export default function SketchCaptureScreen() {
       // computed from the CURRENT transform each update, so pan and
       // pinch can interleave without stomping each other.
       setTransform((t) => {
-        const newScale = clampScale(t.scale * e.scaleChange);
+        // #711 part 4: the floor is the DYNAMIC minimum — a big sketch
+        // pinches out to (at least half of) its fit-all view instead of
+        // fighting a fixed clamp the recentered view already sits below.
+        const newScale = clampScale(t.scale * e.scaleChange, minScale);
         const worldFx = (prevFocal.x - t.tx) / t.scale;
         const worldFy = (prevFocal.y - t.ty) / t.scale;
         return {
@@ -1011,6 +1594,10 @@ export default function SketchCaptureScreen() {
     }
     setBusy(true);
     setSaveNote(null);
+    // The snap ring renders INSIDE the ref'd canvas (it marks a world
+    // point, so it must) — drop it before rasterizing or a lingering
+    // flash gets baked into the PNG (#711).
+    setSnapRing(null);
     try {
       // Rasterize FIT-TO-CONTENT, not as-displayed: apply a transform
       // that frames the whole sketch — EVERY shape + label (#686) —
@@ -1042,17 +1629,26 @@ export default function SketchCaptureScreen() {
       // anything persists.
       uri = await sealCaptureFile(uri);
 
-      // Pick the assignment on the FIRST save only; reuse it thereafter.
-      if (savedIdRef.current == null) {
+      // Pick the assignment on the FIRST save of a NEW sketch only; a
+      // re-save reuses it, and an edit session (#711) inherits its
+      // capture's assignment — editing must never re-ask.
+      if (!assignmentPickedRef.current) {
         try {
           savedAssignmentIdRef.current = await pickAssignment();
         } catch {
           savedAssignmentIdRef.current = null;
         }
+        assignmentPickedRef.current = true;
       }
       const assignmentId = savedAssignmentIdRef.current;
 
       const sketchMeta: SketchMeta = {
+        // #711: an edit session spreads the edited capture's original
+        // meta.sketch underneath, so provenance this session didn't
+        // touch (and, for local rows, keys this build doesn't know)
+        // survives the supersede; the editor-owned fields below
+        // overwrite their slots. Null (a fresh sketch) spreads nothing.
+        ...(baseSketchRef.current ?? {}),
         gridSize,
         scaleFeetPerSquare: scaleFeet,
         snapEnabled: snapActive,
@@ -1074,46 +1670,72 @@ export default function SketchCaptureScreen() {
       }
       if (heading != null) sketchMeta.headingDeg = Math.round(heading);
 
+      // #711: the ORIGINAL field-collection time rides every supersede
+      // — the backend treats captured_at as when the sketch was
+      // collected in the field, and uploaded_at already records the
+      // edit; re-stamping now() would falsify the audit trail. Only the
+      // very first save of a NEW sketch stamps the clock.
+      const capturedAt = capturedAtRef.current ?? new Date().toISOString();
+
       const buildMeta = (id: string): CaptureMeta => {
         const meta: CaptureMeta = {
           id,
           kind: 'sketch',
           localUri: uri,
-          capturedAt: new Date().toISOString(),
-          caption: 'Field sketch',
+          capturedAt,
+          caption: captionRef.current ?? 'Field sketch',
           status: 'pending',
           sketch: sketchMeta,
         };
         if (assignmentId) meta.assignmentId = assignmentId;
+        if (workfileIdRef.current) meta.workfileId = workfileIdRef.current;
         if (pinnedGeo) meta.geo = pinnedGeo;
         return meta;
       };
 
-      if (savedIdRef.current == null) {
+      if (savedIdRef.current == null && supersedeServerIdRef.current == null) {
         const id = newCaptureId();
         await enqueue(buildMeta(id));
         savedIdRef.current = id;
       } else {
-        // Subsequent save → MINT A FRESH ID and supersede the old row.
-        // Never update-in-place and re-POST: the backend is idempotent
-        // on (tenant_id, client_id) — re-posting the same client id
+        // Subsequent save — or the save of an EDIT (#711) → MINT A
+        // FRESH ID and supersede the old revision. Never update-in-place
+        // and re-POST: the backend is idempotent on
+        // (tenant_id, client_id) — re-posting the same client id
         // returns the OLD capture with 200 and silently DISCARDS the new
         // bytes, while the client happily marks them 'synced'.
         const oldId = savedIdRef.current;
-        const oldRow = (await loadQueue()).find((it) => it.id === oldId);
+        const queueBefore = await loadQueue();
+        const oldRow = oldId
+          ? queueBefore.find((it) => it.id === oldId)
+          : undefined;
         const id = newCaptureId();
         await enqueue(buildMeta(id));
-        await removeItem(oldId);
+        if (oldId) await removeItem(oldId);
         savedIdRef.current = id;
-        // Best-effort: if the superseded revision already reached the
-        // server, delete its copy. Swallow every failure — offline is
-        // fine; an older revision lingering server-side beats losing the
-        // new one. (Rows that synced before serverId existed, or whose
-        // upload is mid-flight right now, just skip this.)
-        if (oldRow?.serverId) {
-          void deleteCapture(oldRow.serverId).catch(() => {});
+        // Best-effort: delete the superseded revision's server copy —
+        // learned from the queue row when it synced from this device,
+        // or carried in by the Edit entry for an already-synced capture
+        // (#711). Swallow every failure — offline is fine; an older
+        // revision lingering server-side beats losing the new one.
+        // (Rows that synced before serverId existed, or whose upload is
+        // mid-flight right now, just skip this.)
+        const staleServerId = oldRow?.serverId ?? supersedeServerIdRef.current;
+        if (staleServerId) {
+          void deleteCapture(staleServerId).catch(() => {});
+          // A retained local mirror of that server row (synced earlier)
+          // is stale too — drop it so the hub's counts don't keep a
+          // deleted capture alive.
+          const mirror = queueBefore.find(
+            (it) => it.id !== oldId && it.serverId === staleServerId,
+          );
+          if (mirror) await removeItem(mirror.id);
         }
+        // The supersede chain continues through the LOCAL row from here.
+        supersedeServerIdRef.current = null;
       }
+      capturedAtRef.current = capturedAt;
+      setDirty(false);
 
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       void syncNow();
@@ -1212,7 +1834,7 @@ export default function SketchCaptureScreen() {
         <View style={styles.topBar}>
           <Pressable
             style={[styles.closeButton, styles.closeRow]}
-            onPress={() => router.back()}
+            onPress={onCancel}
           >
             <Ionicons name="arrow-back" size={15} color={Brand.navyDeep} />
             <Text style={styles.closeLabel}>Cancel</Text>
@@ -1276,6 +1898,21 @@ export default function SketchCaptureScreen() {
                       );
                     }),
                   )}
+
+                  {/* #711 part 3: snap feedback — a gold ring on the
+                      live candidate while the finger is down, then on
+                      the just-placed vertex for a beat. Vertex hits get
+                      the bigger ring (they out-rank wall hits). */}
+                  {snapRing ? (
+                    <Circle
+                      cx={snapRing.point.x}
+                      cy={snapRing.point.y}
+                      r={(snapRing.kind === 'vertex' ? 11 : 9) * invScale}
+                      fill="none"
+                      stroke={Brand.gold}
+                      strokeWidth={2.5 * invScale}
+                    />
+                  ) : null}
 
                   {/* Segment dimensions at each midpoint, per shape. */}
                   {shapeRender.map((r, si) =>
@@ -1386,6 +2023,16 @@ export default function SketchCaptureScreen() {
             </View>
           ) : null}
 
+          {/* #711 part 2: full-canvas veil while an edit target loads.
+              Also a canvas sibling; `busy` already gates every mutation
+              underneath, this just says why nothing responds. */}
+          {loadingDoc ? (
+            <View style={styles.loadingOverlay}>
+              <ActivityIndicator color={Brand.navyDeep} />
+              <Text style={styles.loadingLabel}>Opening sketch…</Text>
+            </View>
+          ) : null}
+
           {/* Recenter (#686): bottom-right, above the toolbar. Also a
               canvas sibling — never captured. */}
           <Pressable
@@ -1408,6 +2055,15 @@ export default function SketchCaptureScreen() {
                 <Text style={styles.padTitle}>
                   Distance + direction (screen-relative)
                 </Text>
+                {/* #711 part 3: with exactly one vertex down the pad
+                    repositions the START POINT instead of drawing —
+                    say so, or the "missing" wall reads as a bug. */}
+                {activeShape.vertices.length === 1 &&
+                !activeShape.closed ? (
+                  <Text style={styles.padMoveNote}>
+                    One point placed — arrows move it into position
+                  </Text>
+                ) : null}
                 <View style={styles.pad}>
                   {(['up-left', 'up', 'up-right'] as Dir8[]).map((d) => (
                     <ArrowButton
@@ -1847,6 +2503,13 @@ const styles = StyleSheet.create({
     color: Brand.inkMuted,
     marginBottom: Spacing.one,
   },
+  // #711 part 3: the "arrows move the start point" mode note.
+  padMoveNote: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Brand.amber,
+    marginBottom: Spacing.one,
+  },
   pad: { flexDirection: 'row', gap: Spacing.two, marginBottom: Spacing.two },
   padLastRow: { marginBottom: Spacing.two },
   padCenter: { width: 84, alignItems: 'center', justifyContent: 'center' },
@@ -1935,6 +2598,20 @@ const styles = StyleSheet.create({
     backgroundColor: Brand.green,
   },
   saveToastLabel: { color: Brand.cream, fontSize: 13, fontWeight: '700' },
+  // #711 part 2: veil shown while an edit target loads.
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.two,
+    borderRadius: Radius.md,
+    backgroundColor: 'rgba(255,255,255,0.85)',
+  },
+  loadingLabel: { fontSize: 13, fontWeight: '600', color: Brand.inkMuted },
   recenterBtn: {
     position: 'absolute',
     right: Spacing.two,

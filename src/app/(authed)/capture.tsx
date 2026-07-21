@@ -147,7 +147,20 @@ export default function CaptureScreen() {
               ]}
               disabled={t.disabled}
               onPress={() => {
-                if (t.href) router.push(t.href);
+                if (t.href === '/sketch-capture') {
+                  // #711 part 2c: every route into the sketch editor
+                  // stamps a fresh `entry`, and the editor's session
+                  // effect re-keys on it — the tile always opens a BLANK
+                  // sketch, never another assignment's leftover canvas
+                  // (the screen stays mounted in the tab navigator, so
+                  // without this the last drawing would still be there).
+                  router.push({
+                    pathname: '/sketch-capture',
+                    params: { entry: String(Date.now()) },
+                  });
+                } else if (t.href) {
+                  router.push(t.href);
+                }
               }}
             >
               <Text style={styles.tileTitle}>{t.title}</Text>
