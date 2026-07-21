@@ -31,6 +31,7 @@ import { hashFileHex } from './hash-file';
 import { loadQueue, pendingItems, reclaimStranded, saveQueue, updateItem } from './queue';
 import { capSyncedRows } from './queue-logic';
 import { hashesMatch } from './sha256';
+import { deleteVaultFile, openCaptureAsTempFile, SEALED_EXT } from './vault';
 
 let inFlight = false;
 
@@ -129,7 +130,15 @@ export async function syncNow(): Promise<SyncResult> {
     // dropped; unsynced work (pending/uploading/failed) is always kept.
     const settled = await loadQueue();
     const capped = capSyncedRows(settled);
-    if (capped.length !== settled.length) await saveQueue(capped);
+    if (capped.length !== settled.length) {
+      // Delete the dropped rows' sealed vault files — they live in the
+      // document dir, which the OS never reclaims (PII P0 Phase 3).
+      const kept = new Set(capped.map((it) => it.id));
+      for (const it of settled) {
+        if (!kept.has(it.id)) deleteVaultFile(it.localUri);
+      }
+      await saveQueue(capped);
+    }
   } finally {
     inFlight = false;
   }
@@ -183,7 +192,10 @@ function contentTypeForExt(ext: string): string | undefined {
  */
 function uploadPartFor(item: CaptureMeta): { ext: string; type: string } {
   // Strip any query/fragment, then read the trailing extension.
-  const path = item.localUri.split(/[?#]/)[0];
+  let path = item.localUri.split(/[?#]/)[0];
+  // Sealed vault files are `<name>.<origExt>.nsv` (PII P0 Phase 3) —
+  // drop the seal suffix so the TRUE extension drives the content-type.
+  if (path.endsWith(SEALED_EXT)) path = path.slice(0, -SEALED_EXT.length);
   const dot = path.lastIndexOf('.');
   const rawExt =
     dot >= 0 ? path.slice(dot + 1).toLowerCase() : '';
@@ -222,93 +234,107 @@ async function uploadOne(
   // implementation", so the POST never left the device. See
   // api.ts::uploadCaptureFile.
 
-  // Witness the exact bytes on-device BEFORE the upload — the same file the
-  // multipart uploader sends, so this hash equals what the server seals.
-  const contentHash = await hashFileHex(item.localUri);
-
-  // Derive the content-type from the real recording so voice notes upload
-  // as audio, not a mislabeled JPEG. (The filename is the URI basename;
-  // the server derives type from meta.kind, so only the mime matters here.)
-  const { type } = uploadPartFor(item);
-
-  const parameters: Record<string, string> = {
-    // The backend requires a `meta` JSON field — client_id drives upload
-    // idempotency and kind must be a known capture kind.
-    meta: JSON.stringify({
-      client_id: item.id,
-      captured_at: item.capturedAt,
-      kind: item.kind,
-      geo: item.geo,
-      exif: item.exif,
-      caption: item.caption,
-      // #655 additive: sketch-only settings + geo-reference. `undefined`
-      // for every non-sketch capture (and for sketches saved before this
-      // shipped), so JSON.stringify DROPS the key — the wire shape stays
-      // byte-identical to before for photos/voice/text. New optional key
-      // only; nothing existing changed.
-      sketch: item.sketch && {
-        grid_size: item.sketch.gridSize,
-        scale_feet_per_square: item.sketch.scaleFeetPerSquare,
-        snap_enabled: item.sketch.snapEnabled,
-        gps: item.sketch.gps && {
-          lat: item.sketch.gps.lat,
-          lng: item.sketch.gps.lng,
-          accuracy_m: item.sketch.gps.accuracyMeters,
-          captured_at: item.sketch.gps.capturedAt,
-        },
-        heading_deg: item.sketch.headingDeg,
-        // #666 additive: the editable vector floor-plan doc. `undefined`
-        // for raster-only / older sketches, so JSON.stringify DROPS the
-        // key and the wire stays byte-identical for those. Vertices +
-        // labels are already plain {x,y}/{x,y,text}; only pxPerFoot is
-        // snake-cased to match the rest of the sketch payload.
-        vector: item.sketch.vector && {
-          version: item.sketch.vector.version,
-          px_per_foot: item.sketch.vector.pxPerFoot,
-          vertices: item.sketch.vector.vertices,
-          labels: item.sketch.vector.labels,
-          closed: item.sketch.vector.closed,
-        },
-      },
-    }),
-  };
-  if (item.assignmentId) parameters.assignment_id = item.assignmentId;
-  if (item.workfileId) parameters.workfile_id = item.workfileId;
-
-  const res = await uploadCaptureFile(item.localUri, type, parameters);
-
-  if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
-    try {
-      const body = JSON.parse(res.body) as { message?: string };
-      if (body?.message) detail = body.message;
-    } catch {
-      // body wasn't JSON — keep the HTTP status as the error
-    }
-    throw new Error(detail);
-  }
-
-  let serverId: string | undefined;
-  let serverHash: string | undefined;
+  // PII P0 Phase 3: the file at localUri is sealed at rest. Materialize a
+  // short-lived plaintext temp for the native uploader (it streams a
+  // file:// URI and cannot decrypt); disposed in the finally below.
+  // Legacy plaintext captures come back as-is with a no-op dispose.
+  const plain = await openCaptureAsTempFile(item.localUri);
   try {
-    const body = JSON.parse(res.body) as { id?: string; sha256_hex?: string };
-    if (typeof body?.id === 'string' && body.id.length > 0) serverId = body.id;
-    if (typeof body?.sha256_hex === 'string') serverHash = body.sha256_hex;
-  } catch {
-    // Body wasn't the expected record — no server id / hash to read.
-  }
+    // Witness the exact bytes on-device BEFORE the upload — the same file
+    // the multipart uploader sends, so this hash equals what the server
+    // seals (the server receives + hashes PLAINTEXT, exactly as before).
+    const contentHash = await hashFileHex(plain.uri);
 
-  // Reconcile OUTSIDE the JSON try so a genuine integrity mismatch is never
-  // swallowed by the parse catch. Only enforce when the server actually
-  // returned a hash (older backends may not), so this can't break uploads
-  // against a server that predates the field.
-  if (serverHash && !hashesMatch(contentHash, serverHash)) {
-    throw new Error(
-      `integrity mismatch: on-device ${contentHash.slice(0, 12)}… != sealed ${serverHash.slice(0, 12)}…`,
-    );
-  }
+    // Derive the content-type from the real recording so voice notes upload
+    // as audio, not a mislabeled JPEG. (The filename is the URI basename;
+    // the server derives type from meta.kind, so only the mime matters here.)
+    const { type } = uploadPartFor(item);
 
-  return { serverId, contentHash };
+    const parameters: Record<string, string> = {
+      // The backend requires a `meta` JSON field — client_id drives upload
+      // idempotency and kind must be a known capture kind.
+      meta: JSON.stringify({
+        client_id: item.id,
+        captured_at: item.capturedAt,
+        kind: item.kind,
+        geo: item.geo,
+        exif: item.exif,
+        caption: item.caption,
+        // #655 additive: sketch-only settings + geo-reference. `undefined`
+        // for every non-sketch capture (and for sketches saved before this
+        // shipped), so JSON.stringify DROPS the key — the wire shape stays
+        // byte-identical to before for photos/voice/text. New optional key
+        // only; nothing existing changed.
+        sketch: item.sketch && {
+          grid_size: item.sketch.gridSize,
+          scale_feet_per_square: item.sketch.scaleFeetPerSquare,
+          snap_enabled: item.sketch.snapEnabled,
+          gps: item.sketch.gps && {
+            lat: item.sketch.gps.lat,
+            lng: item.sketch.gps.lng,
+            accuracy_m: item.sketch.gps.accuracyMeters,
+            captured_at: item.sketch.gps.capturedAt,
+          },
+          heading_deg: item.sketch.headingDeg,
+          // #666 additive: the editable vector floor-plan doc. `undefined`
+          // for raster-only / older sketches, so JSON.stringify DROPS the
+          // key and the wire stays byte-identical for those. Vertices +
+          // labels are already plain {x,y}/{x,y,text}; only pxPerFoot is
+          // snake-cased to match the rest of the sketch payload.
+          vector: item.sketch.vector && {
+            version: item.sketch.vector.version,
+            px_per_foot: item.sketch.vector.pxPerFoot,
+            vertices: item.sketch.vector.vertices,
+            labels: item.sketch.vector.labels,
+            closed: item.sketch.vector.closed,
+          },
+        },
+      }),
+    };
+    if (item.assignmentId) parameters.assignment_id = item.assignmentId;
+    if (item.workfileId) parameters.workfile_id = item.workfileId;
+
+    // Upload the PLAINTEXT temp — the server receives, hashes, and seals
+    // the same bytes it always has; at-rest sealing is device-local.
+    const res = await uploadCaptureFile(plain.uri, type, parameters);
+
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const body = JSON.parse(res.body) as { message?: string };
+        if (body?.message) detail = body.message;
+      } catch {
+        // body wasn't JSON — keep the HTTP status as the error
+      }
+      throw new Error(detail);
+    }
+
+    let serverId: string | undefined;
+    let serverHash: string | undefined;
+    try {
+      const body = JSON.parse(res.body) as { id?: string; sha256_hex?: string };
+      if (typeof body?.id === 'string' && body.id.length > 0) serverId = body.id;
+      if (typeof body?.sha256_hex === 'string') serverHash = body.sha256_hex;
+    } catch {
+      // Body wasn't the expected record — no server id / hash to read.
+    }
+
+    // Reconcile OUTSIDE the JSON try so a genuine integrity mismatch is never
+    // swallowed by the parse catch. Only enforce when the server actually
+    // returned a hash (older backends may not), so this can't break uploads
+    // against a server that predates the field.
+    if (serverHash && !hashesMatch(contentHash, serverHash)) {
+      throw new Error(
+        `integrity mismatch: on-device ${contentHash.slice(0, 12)}… != sealed ${serverHash.slice(0, 12)}…`,
+      );
+    }
+
+    return { serverId, contentHash };
+  } finally {
+    // Delete the plaintext temp promptly (a crash before this is caught
+    // by the startup sweep).
+    plain.dispose();
+  }
 }
 
 /**

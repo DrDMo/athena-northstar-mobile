@@ -72,7 +72,7 @@ export default function TextNoteScreen() {
       const id = newCaptureId();
       // Write the body to a temp .txt — this is the file the sync layer
       // uploads as the required `file` part (no meta-only path exists).
-      const localUri = writeTextNoteFile(id, trimmedBody);
+      const localUri = await writeTextNoteFile(id, trimmedBody);
 
       const meta: CaptureMeta = {
         id,

@@ -43,6 +43,7 @@ import { Brand, Radius, Spacing } from '@/constants/theme';
 import { type CaptureMeta, getCurrentGeo, newCaptureId } from '@/lib/capture';
 import { enqueue } from '@/lib/queue';
 import { syncNow } from '@/lib/sync';
+import { sealCaptureFileWithPreview } from '@/lib/vault';
 
 type Facing = 'back' | 'front';
 
@@ -54,6 +55,19 @@ export default function PhotoCaptureScreen() {
   const [busy, setBusy] = useState(false);
   const [captures, setCaptures] = useState<CaptureMeta[]>([]);
   const [locationDenied, setLocationDenied] = useState(false);
+
+  // PII P0 Phase 3: queued photos are sealed at rest, so `<Image>` can't
+  // render `localUri` anymore. The thumb strip uses these session-only
+  // decrypted temps instead; each is deleted on screen unmount (and the
+  // startup sweep catches anything a crash leaves behind).
+  const [previews, setPreviews] = useState<Record<string, string>>({});
+  const previewDisposers = useRef<(() => void)[]>([]);
+  useEffect(
+    () => () => {
+      for (const dispose of previewDisposers.current) dispose();
+    },
+    [],
+  );
 
   // Auto-request the camera permission on mount so the Android system
   // prompt appears directly instead of the "Camera access needed"
@@ -113,14 +127,23 @@ export default function PhotoCaptureScreen() {
 
       if (!photo?.uri) return;
 
+      // Seal the shot into the vault (PII P0 Phase 3): the camera's
+      // plaintext temp is encrypted + deleted before anything persists.
+      // The preview temp is written from the same bytes in hand (no
+      // decrypt-right-after-encrypt) for the session thumb strip.
+      const sealed = await sealCaptureFileWithPreview(photo.uri);
+
       const meta: CaptureMeta = {
         id: newCaptureId(),
         kind: 'photo',
-        localUri: photo.uri,
+        localUri: sealed.uri,
         capturedAt: new Date().toISOString(),
         exif: photo.exif as Record<string, unknown> | undefined,
         status: 'pending',
       };
+
+      previewDisposers.current.push(sealed.disposePreview);
+      setPreviews((p) => ({ ...p, [meta.id]: sealed.previewUri }));
 
       // Best-effort geotag. The capture itself is the source of
       // truth — losing the geo doesn't fail the shot.
@@ -235,7 +258,10 @@ export default function PhotoCaptureScreen() {
             showsHorizontalScrollIndicator={false}
             renderItem={({ item }) => (
               <View style={styles.thumb}>
-                <Image source={{ uri: item.localUri }} style={styles.thumbImg} />
+                <Image
+                  source={{ uri: previews[item.id] ?? item.localUri }}
+                  style={styles.thumbImg}
+                />
                 {item.geo ? (
                   <View style={styles.thumbGeoBadge}>
                     <Text style={styles.thumbGeoLabel}>GPS</Text>

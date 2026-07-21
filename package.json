@@ -6,6 +6,7 @@
     "@expo-google-fonts/playfair-display": "^0.4.2",
     "@expo/ui": "~56.0.16",
     "@expo/vector-icons": "^15.0.2",
+    "@noble/ciphers": "^2.2.0",
     "@react-native-async-storage/async-storage": "^3.1.1",
     "@react-native-community/netinfo": "^11.4.1",
     "@react-native-vector-icons/common": "^13.0.1",
@@ -14,6 +15,7 @@
     "expo-audio": "~56.0.11",
     "expo-camera": "~56.0.7",
     "expo-constants": "~56.0.17",
+    "expo-crypto": "~56.0.4",
     "expo-device": "~56.0.4",
     "expo-file-system": "~56.0.7",
     "expo-font": "~56.0.5",
@@ -46,6 +48,8 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "eslint": "^9.0.0",
+    "eslint-config-expo": "~56.0.4",
     "typescript": "~6.0.3"
   },
   "scripts": {

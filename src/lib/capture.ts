@@ -14,10 +14,10 @@
  * survives the next milestone.
  */
 
-import { File, Paths } from 'expo-file-system';
 import * as Location from 'expo-location';
 
 import type { SketchDoc } from './sketch-model';
+import { sealTextToVault } from './vault';
 
 export type CaptureKind = 'photo' | 'voice_note' | 'text_note' | 'sketch';
 
@@ -153,19 +153,17 @@ export function newCaptureId(): string {
  * `text/plain; charset=utf-8`, matching the server's default for the
  * `text_note` kind.
  *
- * Uses the SDK 56 synchronous filesystem API (`File`/`Paths`). The
- * cache directory is correct here: once a capture syncs, its local file
- * is disposable, and the system may reclaim cache under storage
- * pressure (the queue tolerates a missing local file by failing that
- * one upload, not the app).
+ * PII P0 Phase 3: the body (subject address, MLS/comp notes) is sealed
+ * straight into the vault — the plaintext never touches disk. The sync
+ * layer decrypts to a short-lived temp at upload time. Sealed captures
+ * live under the document directory (not cache), which also means a
+ * pending note can no longer be lost to cache reclaim.
  */
-export function writeTextNoteFile(captureId: string, body: string): string {
-  const file = new File(Paths.cache, `${captureId}.txt`);
-  // create() throws if the file already exists; ids are unique per
-  // capture, but guard anyway so a retry doesn't crash the save.
-  if (!file.exists) file.create();
-  file.write(body);
-  return file.uri;
+export function writeTextNoteFile(
+  captureId: string,
+  body: string,
+): Promise<string> {
+  return sealTextToVault(`${captureId}.txt`, body);
 }
 
 /**

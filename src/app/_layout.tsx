@@ -34,6 +34,7 @@ import {
 import { fetchMe } from '@/lib/api';
 import { setAuth, useAuth } from '@/lib/auth-store';
 import { startAutoSyncOnReconnect, syncNow } from '@/lib/sync';
+import { migrateVaultAtStartup } from '@/lib/vault-migrate';
 import { Brand } from '@/constants/theme';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -91,7 +92,10 @@ export default function RootLayout() {
   // from a previous session.
   useEffect(() => {
     if (!ready || !me) return;
-    void syncNow();
+    // PII P0 Phase 3: sweep crash-leftover plaintext temps + one-shot
+    // re-seal of legacy captures BEFORE the first sync, so an upload
+    // never races the migration. Both are cheap no-ops afterwards.
+    void migrateVaultAtStartup().then(() => syncNow());
     const unsubscribe = startAutoSyncOnReconnect();
     return unsubscribe;
   }, [ready, me]);

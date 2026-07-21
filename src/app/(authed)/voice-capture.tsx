@@ -42,6 +42,7 @@ import { Brand, Radius, Spacing } from '@/constants/theme';
 import { type CaptureMeta, getCurrentGeo, newCaptureId } from '@/lib/capture';
 import { enqueue } from '@/lib/queue';
 import { syncNow } from '@/lib/sync';
+import { sealCaptureFile } from '@/lib/vault';
 
 type PermState = 'unknown' | 'granted' | 'denied-can-ask' | 'denied-blocked';
 
@@ -99,10 +100,15 @@ export default function VoiceCaptureScreen() {
         return;
       }
 
+      // Seal the recording into the vault (PII P0 Phase 3): the
+      // recorder's plaintext temp is encrypted + deleted before
+      // anything persists.
+      const sealedUri = await sealCaptureFile(uri);
+
       const meta: CaptureMeta = {
         id: newCaptureId(),
         kind: 'voice_note',
-        localUri: uri,
+        localUri: sealedUri,
         capturedAt: new Date().toISOString(),
         status: 'pending',
       };
