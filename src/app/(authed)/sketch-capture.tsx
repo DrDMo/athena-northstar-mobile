@@ -506,12 +506,35 @@ export default function SketchCaptureScreen() {
       const next = pxPerFootFromGrid(spacingPx, feetPerSquare);
       if (next <= 0 || next === pxPerFoot) return;
       if (pxPerFoot > 0 && hasContent) {
+        const factor = next / pxPerFoot;
         const rescaled = rescaleDoc(
           docFromShapes(pxPerFoot, shapes, labels),
-          next / pxPerFoot,
+          factor,
         );
         setShapes(docShapes(rescaled));
         setLabels(rescaled.labels);
+        // The undo history's `dropped` close-vertices are WORLD
+        // coordinates in the old pixel space — move them by the same
+        // factor, or undoing a close after a grid/scale change restores
+        // the vertex at its stale position and bends the wall (review
+        // catch; same invariant as the geometry above).
+        setHistory((h) =>
+          h.map((a) =>
+            a.t === 'c' && a.dropped
+              ? {
+                  ...a,
+                  dropped: {
+                    x: a.dropped.x * factor,
+                    y: a.dropped.y * factor,
+                  },
+                }
+              : a,
+          ),
+        );
+        // A pending label draft anchor is world-space too.
+        setLabelDraft((d) =>
+          d ? { ...d, x: d.x * factor, y: d.y * factor } : d,
+        );
       }
       setPxPerFoot(next);
     },
@@ -638,7 +661,8 @@ export default function SketchCaptureScreen() {
   // Auto-pan to the newest vertex whenever one is ADDED (arrow pacing,
   // tap, or a new shape's first point). Runs on committed state so it
   // composes with the functional setShapes updaters; count-gated across
-  // ALL shapes so undo/clear/rescale (which never grow the total) don't
+  // ALL shapes; undoing a close CAN grow the total by restoring the
+  // dropped duplicate vertex (harmless — it pans to the restored point);
   // pan. The flattened list's LAST element is always the just-added
   // vertex: vertices are only ever appended to the LAST shape, and
   // allVertices flattens in shape order.
@@ -794,45 +818,47 @@ export default function SketchCaptureScreen() {
   }, [busy, activeShape, activeIndex]);
 
   const onUndo = useCallback(() => {
-    if (busy) return;
-    setHistory((h) => {
-      if (h.length === 0) return h;
-      const top = h[h.length - 1];
-      if (top.t === 'c') {
-        // Reopen THE shape the close targeted (index is stable — shapes
-        // are only pushed/popped at the end) and restore the duplicate
-        // end vertex the close dropped, if any.
-        setShapes((ss) =>
-          ss.map((s, i) =>
-            i === top.shape
-              ? {
-                  closed: false,
-                  vertices: top.dropped
-                    ? [...s.vertices, top.dropped]
-                    : s.vertices,
-                }
-              : s,
-          ),
-        );
-      } else if (top.t === 'ns') {
-        // Undoing a later shape's FIRST vertex removes the whole
-        // (one-point) shape — never the founding first shape.
-        setShapes((ss) => (ss.length > 1 ? ss.slice(0, -1) : ss));
-      } else if (top.t === 'v') {
-        setShapes((ss) =>
-          ss.map((s, i) =>
-            i === ss.length - 1
-              ? { ...s, vertices: s.vertices.slice(0, -1) }
-              : s,
-          ),
-        );
-      } else if (top.t === 'l') {
-        setLabels((l) => l.slice(0, -1));
-      }
-      return h.slice(0, -1);
-    });
+    if (busy || history.length === 0) return;
+    // Read the top action from the render closure and issue each state
+    // update as a SIBLING — nesting setShapes/setLabels inside the
+    // setHistory updater made the updater impure, and React may invoke
+    // updaters twice (StrictMode / concurrent replays), which would make
+    // one Undo eat two actions (review catch).
+    const top = history[history.length - 1];
+    if (top.t === 'c') {
+      // Reopen THE shape the close targeted (index is stable — shapes
+      // are only pushed/popped at the end) and restore the duplicate
+      // end vertex the close dropped, if any.
+      setShapes((ss) =>
+        ss.map((s, i) =>
+          i === top.shape
+            ? {
+                closed: false,
+                vertices: top.dropped
+                  ? [...s.vertices, top.dropped]
+                  : s.vertices,
+              }
+            : s,
+        ),
+      );
+    } else if (top.t === 'ns') {
+      // Undoing a later shape's FIRST vertex removes the whole
+      // (one-point) shape — never the founding first shape.
+      setShapes((ss) => (ss.length > 1 ? ss.slice(0, -1) : ss));
+    } else if (top.t === 'v') {
+      setShapes((ss) =>
+        ss.map((s, i) =>
+          i === ss.length - 1
+            ? { ...s, vertices: s.vertices.slice(0, -1) }
+            : s,
+        ),
+      );
+    } else if (top.t === 'l') {
+      setLabels((l) => l.slice(0, -1));
+    }
+    setHistory((h) => h.slice(0, -1));
     void Haptics.selectionAsync();
-  }, [busy]);
+  }, [busy, history]);
 
   const onClear = useCallback(() => {
     if (busy) return;
@@ -1513,6 +1539,15 @@ export default function SketchCaptureScreen() {
                 {'   ·   '}Perimeter {activeRender.perimeter.toFixed(1)} ft ·
                 tap canvas for the next shape
               </Text>
+            </Text>
+          ) : activeShape.closed ? (
+            // Closed but zero-area (collinear points): the close pill is
+            // gone, so don't dead-end the user into tapping it (review
+            // catch). Undo is the way out.
+            <Text style={styles.readoutPerim}>
+              Perimeter {activeRender.perimeter.toFixed(1)} ft · no
+              measurable area — Undo to adjust, or tap canvas for the next
+              shape
             </Text>
           ) : activeShape.vertices.length >= 2 ? (
             <Text style={styles.readoutPerim}>
