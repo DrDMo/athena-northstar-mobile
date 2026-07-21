@@ -17,6 +17,7 @@ import Constants from 'expo-constants';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 
 import { loadSession, saveSession, clearSession } from './session';
+import type { SketchMetaWire } from './sketch-model';
 
 const API_BASE: string =
   (Constants.expoConfig?.extra as { apiBase?: string } | undefined)?.apiBase ??
@@ -461,6 +462,15 @@ export type CaptureSummary = {
   case_id?: string;
   workfile_id?: string;
   geo?: { lat?: number; lon?: number; accuracyMeters?: number };
+  /**
+   * #655/#666: sketch settings + the editable vector floor-plan doc,
+   * passed through the backend opaquely (snake_case wire shape). Present
+   * only on sketch captures saved by the vector tool; the server never
+   * validates the interior, so read the vector via
+   * `parseSketchVector` — never a cast. This is what lets a filed
+   * sketch be re-opened for editing on-device (#711).
+   */
+  sketch?: SketchMetaWire;
   caption?: string;
   /**
    * Transcription state for voice notes (null for non-audio captures).

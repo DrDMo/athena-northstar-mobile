@@ -404,6 +404,322 @@ export function rescaleDoc(doc: SketchDoc, factor: number): SketchDoc {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Start-point snapping (#711 part 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * What a resolved placement snapped to, in priority order: an existing
+ * vertex beats a point on a wall segment beats a grid intersection
+ * beats nothing. The editor keys its highlight-ring feedback off this.
+ */
+export type SnapKind = 'vertex' | 'segment' | 'grid' | 'none';
+
+/** A resolved placement: the (possibly moved) point + what it snapped to. */
+export type SnapResult = { point: SketchVertex; kind: SnapKind };
+
+/**
+ * Nearest point ON the segment a→b to `p` — the perpendicular
+ * projection, clamped to the segment's endpoints (a degenerate zero-
+ * length segment returns `a`). Pure geometry; the wall-snap candidate
+ * generator below runs it per edge.
+ */
+export function closestPointOnSegment(
+  a: SketchVertex,
+  b: SketchVertex,
+  p: SketchVertex,
+): SketchVertex {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const lenSq = abx * abx + aby * aby;
+  if (lenSq <= GEOM_EPS) return { x: a.x, y: a.y };
+  const t = Math.max(
+    0,
+    Math.min(1, ((p.x - a.x) * abx + (p.y - a.y) * aby) / lenSq),
+  );
+  return { x: a.x + t * abx, y: a.y + t * aby };
+}
+
+/** `p` snapped to the nearest grid intersection at `spacing` px. */
+export function snapToGrid(p: SketchVertex, spacing: number): SketchVertex {
+  if (spacing <= 0) return p;
+  return {
+    x: Math.round(p.x / spacing) * spacing,
+    y: Math.round(p.y / spacing) * spacing,
+  };
+}
+
+/**
+ * Resolve where a tapped point should actually land (#711 part 3):
+ *
+ *   1. The nearest existing vertex of ANY shape within
+ *      `vertexTolerance` — continuing a wall from an existing corner is
+ *      the common case when a new shape (a garage off the house) starts
+ *      on existing geometry, so corners win over everything.
+ *   2. Else the nearest point ON any wall segment (every shape's edges,
+ *      including a closed shape's closing edge) within
+ *      `segmentTolerance` — starting mid-wall is the next-most-likely
+ *      intent.
+ *   3. Else the grid intersection, when `gridSpacing` > 0 (the caller
+ *      passes 0 when grid snap is off).
+ *   4. Else the raw point, untouched.
+ *
+ * ALL tolerances are WORLD pixels. The editor works in screen dp, so it
+ * converts before calling (tolerance_world = tolerance_dp / viewScale)
+ * — a generous 24 dp fingertip stays 24 dp on screen at every zoom.
+ *
+ * `exclude` lists vertices that must NOT attract the point — the active
+ * shape's current anchor (its last open vertex), or a snap there would
+ * mint a zero-length wall. A segment candidate landing within
+ * `vertexTolerance` of an excluded vertex is rejected for the same
+ * reason (the edges touching the anchor pass right through it).
+ * Matching is by exact coordinates, not reference, so callers can pass
+ * values that survived a state-map clone.
+ */
+export function resolveSnapPoint(
+  p: SketchVertex,
+  shapes: SketchShape[],
+  opts: {
+    vertexTolerance: number;
+    segmentTolerance: number;
+    gridSpacing?: number;
+    exclude?: SketchVertex[];
+  },
+): SnapResult {
+  const excluded = (v: SketchVertex): boolean =>
+    (opts.exclude ?? []).some((e) => e.x === v.x && e.y === v.y);
+
+  // 1. Nearest non-excluded vertex of any shape within tolerance.
+  if (opts.vertexTolerance > 0) {
+    let best: SketchVertex | null = null;
+    let bestDist = opts.vertexTolerance;
+    for (const shape of shapes) {
+      for (const v of shape.vertices) {
+        if (excluded(v)) continue;
+        const d = Math.hypot(v.x - p.x, v.y - p.y);
+        if (d <= bestDist) {
+          best = v;
+          bestDist = d;
+        }
+      }
+    }
+    if (best) return { point: { x: best.x, y: best.y }, kind: 'vertex' };
+  }
+
+  // 2. Nearest on-segment projection within tolerance, across every
+  // shape's edges (closing edge included for closed polygons).
+  if (opts.segmentTolerance > 0) {
+    let best: SketchVertex | null = null;
+    let bestDist = opts.segmentTolerance;
+    for (const shape of shapes) {
+      const verts = shape.vertices;
+      const edgeCount =
+        verts.length - 1 + (shape.closed && verts.length >= 3 ? 1 : 0);
+      for (let i = 0; i < edgeCount; i++) {
+        const a = verts[i];
+        const b = verts[(i + 1) % verts.length];
+        const q = closestPointOnSegment(a, b, p);
+        // A projection hugging an excluded vertex would still mint a
+        // (near-)zero-length wall — reject it like the vertex itself.
+        const nearExcluded = (opts.exclude ?? []).some(
+          (e) => Math.hypot(e.x - q.x, e.y - q.y) <= opts.vertexTolerance,
+        );
+        if (nearExcluded) continue;
+        const d = Math.hypot(q.x - p.x, q.y - p.y);
+        if (d <= bestDist) {
+          best = q;
+          bestDist = d;
+        }
+      }
+    }
+    if (best) return { point: best, kind: 'segment' };
+  }
+
+  // 3. Grid, when the caller has snap-to-grid active.
+  if (opts.gridSpacing && opts.gridSpacing > 0) {
+    return { point: snapToGrid(p, opts.gridSpacing), kind: 'grid' };
+  }
+
+  return { point: p, kind: 'none' };
+}
+
+// ---------------------------------------------------------------------------
+// Fit-to-content + dynamic zoom floor (#711 part 4)
+// ---------------------------------------------------------------------------
+
+/** A pan/zoom transform: screen = world * scale + (tx, ty). */
+export type FitTransform = { tx: number; ty: number; scale: number };
+
+/**
+ * Fit-to-content transform: the bounding box of the given points
+ * (every shape's vertices flattened, plus label anchors), padded
+ * `padPx` screen px, scaled and centered into a w×h viewport. Scale is
+ * capped at `maxScale` so a tiny sketch isn't blown up absurdly, but
+ * has NO lower clamp — a building bigger than the viewport must shrink
+ * to fit rather than crop. Returns null for an empty point set or a
+ * degenerate viewport. Extracted from the editor (#711) so the dynamic
+ * zoom floor below shares the exact fit math Save and Recenter use.
+ */
+export function fitTransformForContent(
+  points: SketchVertex[],
+  w: number,
+  h: number,
+  padPx: number,
+  maxScale: number,
+): FitTransform | null {
+  if (w <= 0 || h <= 0) return null;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of points) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  if (!Number.isFinite(minX)) return null; // no content
+  const bw = Math.max(maxX - minX, 1); // guard zero-size bbox (one point)
+  const bh = Math.max(maxY - minY, 1);
+  const availW = Math.max(w - padPx * 2, 1);
+  const availH = Math.max(h - padPx * 2, 1);
+  const s = Math.min(availW / bw, availH / bh, maxScale);
+  return {
+    scale: s,
+    tx: (w - bw * s) / 2 - minX * s,
+    ty: (h - bh * s) / 2 - minY * s,
+  };
+}
+
+/**
+ * The zoom-out floor for the editor (#711 part 4): a FIXED minimum made
+ * a large sketch un-viewable — fit-to-content can legitimately land
+ * below it, and once there, pinch fought the clamp. The floor is
+ * dynamic: low enough to zoom out to HALF the fit-all-content view
+ * (breathing room around the whole drawing), but never above the
+ * static minimum a small sketch has always had. Pass the current fit
+ * transform's scale (null when the canvas is empty → the static floor).
+ */
+export function dynamicMinScale(
+  fitScale: number | null,
+  staticMin: number,
+): number {
+  if (fitScale == null || !Number.isFinite(fitScale) || fitScale <= 0) {
+    return staticMin;
+  }
+  return Math.min(staticMin, fitScale * 0.5);
+}
+
+// ---------------------------------------------------------------------------
+// Wire parsing (#711 part 2 — edit an existing capture's sketch)
+// ---------------------------------------------------------------------------
+
+/**
+ * The `meta.sketch` object as the BACKEND stores and returns it —
+ * snake_case, every field optional, passed through opaquely (the server
+ * never validates the interior). The mobile in-memory model is
+ * camelCase (`SketchMeta` in capture.ts); sync.ts translates outbound,
+ * and {@link parseSketchVector} is the defensive inbound path.
+ */
+export type SketchMetaWire = {
+  grid_size?: string;
+  scale_feet_per_square?: number;
+  snap_enabled?: boolean;
+  gps?: {
+    lat?: number;
+    lng?: number;
+    accuracy_m?: number;
+    captured_at?: string;
+  };
+  heading_deg?: number;
+  /** The vector doc — parse via {@link parseSketchVector}, never cast. */
+  vector?: unknown;
+};
+
+/**
+ * Defensive read of a capture's `meta.sketch.vector` from an untyped
+ * value into a clean camelCase {@link SketchDoc} — THE inbound path for
+ * re-opening a saved sketch (#711). Nothing upstream guarantees the
+ * shape (the backend stores it opaquely), so every field the editor
+ * depends on is validated; junk returns `null` (an old raster-only
+ * sketch, a photo, corrupted data — a friendly not-editable, never a
+ * crash). Accepts the wire's `px_per_foot` AND the local queue's
+ * camelCase `pxPerFoot`, so one parser covers both sources. Size caps
+ * mirror the web editor's: hasSelfIntersection is O(n²) per shape, so
+ * a pathological doc must read as not-editable rather than freeze the
+ * UI thread.
+ */
+export function parseSketchVector(value: unknown): SketchDoc | null {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const v = value as Record<string, unknown>;
+  if (v.version !== 1) return null;
+  const ppf = v.px_per_foot ?? v.pxPerFoot;
+  if (typeof ppf !== 'number' || !Number.isFinite(ppf) || ppf <= 0) {
+    return null;
+  }
+  if (!Array.isArray(v.vertices) || !Array.isArray(v.labels)) return null;
+  if (v.vertices.length > 2000 || v.labels.length > 500) return null;
+  const readVertex = (raw: unknown): SketchVertex | null => {
+    const q = raw as Record<string, unknown> | null;
+    if (
+      q == null ||
+      typeof q.x !== 'number' ||
+      typeof q.y !== 'number' ||
+      !Number.isFinite(q.x) ||
+      !Number.isFinite(q.y)
+    ) {
+      return null;
+    }
+    return { x: q.x, y: q.y };
+  };
+  const vertices: SketchVertex[] = [];
+  for (const raw of v.vertices) {
+    const p = readVertex(raw);
+    if (!p) return null;
+    vertices.push(p);
+  }
+  const labels: SketchLabel[] = [];
+  for (const raw of v.labels) {
+    const q = raw as Record<string, unknown> | null;
+    const p = readVertex(raw);
+    if (!p || typeof q?.text !== 'string') return null;
+    labels.push({ x: p.x, y: p.y, text: q.text });
+  }
+  // #686: optional multi-shape array. Strict like everything else — a
+  // malformed shapes entry means a corrupt doc, not a shrug (silently
+  // dropping a garage on the next save would be data loss).
+  let shapes: SketchShape[] | undefined;
+  if (v.shapes !== undefined) {
+    if (!Array.isArray(v.shapes) || v.shapes.length > 50) return null;
+    let totalVerts = vertices.length;
+    const parsed: SketchShape[] = [];
+    for (const raw of v.shapes) {
+      const sh = raw as Record<string, unknown> | null;
+      if (sh == null || !Array.isArray(sh.vertices)) return null;
+      const verts: SketchVertex[] = [];
+      for (const pnt of sh.vertices) {
+        const p = readVertex(pnt);
+        if (!p) return null;
+        verts.push(p);
+      }
+      totalVerts += verts.length;
+      if (totalVerts > 4000) return null;
+      parsed.push({ vertices: verts, closed: sh.closed === true });
+    }
+    if (parsed.length > 0) shapes = parsed;
+  }
+  return {
+    version: 1,
+    pxPerFoot: ppf,
+    vertices,
+    labels,
+    closed: v.closed === true,
+    ...(shapes ? { shapes } : {}),
+  };
+}
+
 /** Tolerance for the orientation / bounding-box predicates below. */
 const GEOM_EPS = 1e-9;
 

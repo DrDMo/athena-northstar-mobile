@@ -147,7 +147,17 @@ export default function CaptureScreen() {
               ]}
               disabled={t.disabled}
               onPress={() => {
-                if (t.href) router.push(t.href);
+                if (t.href === '/sketch-capture') {
+                  // #711 (revised on review): the tile RESUMES an
+                  // in-progress scratch sketch — the editor keys plain
+                  // sessions on the assignment context, so a tab flip +
+                  // re-entry never wipes unsaved strokes, while another
+                  // assignment's canvas still resets. Clear is the way
+                  // to a fresh sheet.
+                  router.push('/sketch-capture');
+                } else if (t.href) {
+                  router.push(t.href);
+                }
               }}
             >
               <Text style={styles.tileTitle}>{t.title}</Text>
