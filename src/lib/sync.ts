@@ -287,6 +287,14 @@ async function uploadOne(
             vertices: item.sketch.vector.vertices,
             labels: item.sketch.vector.labels,
             closed: item.sketch.vector.closed,
+            // #686 additive: EVERY drawn outline, as
+            // [{ vertices: [{x,y},…], closed }]. `undefined` for docs
+            // saved before multi-shape shipped, so JSON.stringify DROPS
+            // the key and their wire stays byte-identical. The legacy
+            // top-level vertices/closed above keep mirroring shapes[0]
+            // (the editor writes both — see docFromShapes), so pre-#686
+            // readers still see the first outline unchanged.
+            shapes: item.sketch.vector.shapes,
           },
         },
       }),
