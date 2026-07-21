@@ -184,7 +184,7 @@ export default function LoginScreen() {
             style={styles.input}
             value={password}
             onChangeText={setPassword}
-            placeholder="your tenant password"
+            placeholder="your password"
             placeholderTextColor={Brand.inkFaint}
             secureTextEntry
             textContentType="password"
