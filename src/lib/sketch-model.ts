@@ -1,10 +1,12 @@
 /**
- * Vector floor-plan model + geometry (#666, SLICE 1).
+ * Vector floor-plan model + geometry (#666, SLICE 1; multi-shape #686).
  *
  * This is the editable document a field appraiser assembles on the
  * sketch surface, plus the pure geometry helpers that turn it into real
  * measurements (segment lengths, perimeter, enclosed area). It replaces
  * the old freehand-raster tool, whose PNG threw the geometry away.
+ * Since #686 a document holds MULTIPLE shapes (house + garage + deck);
+ * see the SketchDoc mirror invariant for how that stayed wire-additive.
  *
  * Design rules:
  *   - FRAMEWORK-FREE. No react / react-native imports so the exact same
@@ -26,9 +28,31 @@ export type SketchVertex = { x: number; y: number };
 export type SketchLabel = { x: number; y: number; text: string };
 
 /**
+ * One drawn outline (#686): an open polyline while it is being traced,
+ * a closed polygon once its last vertex connects back to its first. A
+ * document holds several of these — house + garage + deck — where the
+ * pre-#686 editor held exactly one.
+ */
+export type SketchShape = {
+  /** Polyline / polygon vertices, in draw order. */
+  vertices: SketchVertex[];
+  /** True once the shape is closed (last vertex connects back to first). */
+  closed: boolean;
+};
+
+/**
  * The editable sketch document. Persisted on `meta.sketch.vector` so a
  * sketch round-trips and can be re-opened and edited later — the whole
  * point of going vector.
+ *
+ * MULTI-SHAPE INVARIANT (#686, additive evolution): `shapes` is the
+ * full outline list; the legacy top-level `vertices` + `closed` ALWAYS
+ * mirror `shapes[0]`. Writers set both (see {@link docFromShapes});
+ * readers that predate `shapes` keep working off the mirror, and
+ * readers that know about `shapes` normalize through {@link docShapes},
+ * which treats a legacy doc (no `shapes` key) as a single-shape doc.
+ * The wire only ever GAINS keys — `shapes` is a new optional key, and
+ * nothing existing changed meaning.
  */
 export type SketchDoc = {
   /** Schema version — bump on any breaking shape change. */
@@ -39,13 +63,63 @@ export type SketchDoc = {
    * store it so every length/area is computable from the doc alone.
    */
   pxPerFoot: number;
-  /** Polyline / polygon vertices, in draw order. */
+  /**
+   * Polyline / polygon vertices of the FIRST shape, in draw order.
+   * Legacy mirror of `shapes[0].vertices` — see the invariant above.
+   */
   vertices: SketchVertex[];
-  /** Free-floating text labels. */
+  /** Free-floating text labels (one document-wide pool, not per-shape). */
   labels: SketchLabel[];
-  /** True once the shape is closed (last vertex connects back to first). */
+  /**
+   * True once the first shape is closed. Legacy mirror of
+   * `shapes[0].closed` — see the invariant above.
+   */
   closed: boolean;
+  /**
+   * Every drawn outline (#686). Optional + additive: docs saved before
+   * multi-shape shipped omit it, and {@link docShapes} treats those as
+   * a single shape built from the legacy `vertices`/`closed` mirror.
+   */
+  shapes?: SketchShape[];
 };
+
+/**
+ * Normalized shape list for a document — THE load path for multi-shape
+ * (#686). A modern doc returns its `shapes` array; a legacy doc (or one
+ * with an empty `shapes` — a writer bug, but never worth throwing over)
+ * is treated as the single shape its top-level `vertices`/`closed`
+ * describe. Every consumer that iterates shapes goes through this so
+ * pre-#686 docs keep rendering and measuring identically.
+ */
+export function docShapes(doc: SketchDoc): SketchShape[] {
+  if (doc.shapes && doc.shapes.length > 0) return doc.shapes;
+  return [{ vertices: doc.vertices, closed: doc.closed }];
+}
+
+/**
+ * Build a document from a shape list, WRITING THE MIRROR INVARIANT: the
+ * legacy top-level `vertices`/`closed` are set from `shapes[0]` so a
+ * pre-#686 reader (older app build, the web viewer before it learns
+ * `shapes`) still sees the first outline exactly as before. An empty
+ * shape list normalizes to one empty open shape so the invariant always
+ * has a `shapes[0]` to mirror.
+ */
+export function docFromShapes(
+  pxPerFoot: number,
+  shapes: SketchShape[],
+  labels: SketchLabel[],
+): SketchDoc {
+  const list: SketchShape[] =
+    shapes.length > 0 ? shapes : [{ vertices: [], closed: false }];
+  return {
+    version: 1,
+    pxPerFoot,
+    vertices: list[0].vertices,
+    closed: list[0].closed,
+    labels,
+    shapes: list,
+  };
+}
 
 /**
  * The 8 SCREEN-RELATIVE directions for keyboard distance entry. These
@@ -135,12 +209,17 @@ export type SketchSegment = {
 };
 
 /**
- * The edges of the doc, in draw order. Consecutive vertices form the
+ * The edges of one shape, in draw order. Consecutive vertices form the
  * open path; when `closed` (and there are ≥3 vertices) the closing edge
- * (last→first) is appended so the polygon reads as a loop.
+ * (last→first) is appended so the polygon reads as a loop. This is the
+ * per-shape primitive (#686) — {@link segments} keeps the historic
+ * doc-level signature by delegating with the legacy mirror fields.
  */
-export function segments(doc: SketchDoc): SketchSegment[] {
-  const { vertices, pxPerFoot } = doc;
+export function shapeSegments(
+  shape: SketchShape,
+  pxPerFoot: number,
+): SketchSegment[] {
+  const { vertices } = shape;
   const out: SketchSegment[] = [];
   const mk = (a: SketchVertex, b: SketchVertex): SketchSegment => ({
     a,
@@ -153,32 +232,62 @@ export function segments(doc: SketchDoc): SketchSegment[] {
   }
   // Closing edge only makes sense for a real polygon (≥3 vertices);
   // for 2 it would just duplicate the single edge.
-  if (doc.closed && vertices.length >= 3) {
+  if (shape.closed && vertices.length >= 3) {
     out.push(mk(vertices[vertices.length - 1], vertices[0]));
   }
   return out;
 }
 
 /**
- * Total length of every edge, in feet. For an open path this is the
- * traced distance; for a closed shape it is the polygon perimeter
- * (the closing edge is included via {@link segments}).
+ * The edges of the doc's FIRST shape (the legacy mirror), in draw
+ * order. Pre-#686 callers measured "the" outline through this; it now
+ * reads `shapes[0]` via the mirror invariant, so its meaning is
+ * unchanged for every doc that existed before multi-shape.
  */
-export function perimeterFeet(doc: SketchDoc): number {
-  return segments(doc).reduce((sum, s) => sum + s.feet, 0);
+export function segments(doc: SketchDoc): SketchSegment[] {
+  return shapeSegments(
+    { vertices: doc.vertices, closed: doc.closed },
+    doc.pxPerFoot,
+  );
 }
 
 /**
- * Enclosed area in square feet via the shoelace (surveyor's) formula on
- * the vertices, converted to feet² by dividing the pixel area by
- * pxPerFoot². Only meaningful for a CLOSED polygon of ≥3 vertices;
+ * Total length of one shape's edges, in feet. For an open path this is
+ * the traced distance; for a closed shape it is the polygon perimeter
+ * (the closing edge is included via {@link shapeSegments}).
+ */
+export function shapePerimeterFeet(
+  shape: SketchShape,
+  pxPerFoot: number,
+): number {
+  return shapeSegments(shape, pxPerFoot).reduce((sum, s) => sum + s.feet, 0);
+}
+
+/**
+ * Perimeter of the doc's FIRST shape (legacy mirror) — see
+ * {@link segments} for why the doc-level signature survives.
+ */
+export function perimeterFeet(doc: SketchDoc): number {
+  return shapePerimeterFeet(
+    { vertices: doc.vertices, closed: doc.closed },
+    doc.pxPerFoot,
+  );
+}
+
+/**
+ * Enclosed area of one shape in square feet via the shoelace
+ * (surveyor's) formula, converted to feet² by dividing the pixel area
+ * by pxPerFoot². Only meaningful for a CLOSED polygon of ≥3 vertices;
  * returns 0 otherwise (or when uncalibrated). The absolute value is
  * taken so winding order (clockwise vs counter-clockwise) doesn't flip
  * the sign.
  */
-export function areaSquareFeet(doc: SketchDoc): number {
-  const { vertices, pxPerFoot } = doc;
-  if (!doc.closed || vertices.length < 3 || pxPerFoot <= 0) return 0;
+export function shapeAreaSquareFeet(
+  shape: SketchShape,
+  pxPerFoot: number,
+): number {
+  const { vertices } = shape;
+  if (!shape.closed || vertices.length < 3 || pxPerFoot <= 0) return 0;
   let twiceArea = 0;
   for (let i = 0; i < vertices.length; i++) {
     const a = vertices[i];
@@ -187,6 +296,52 @@ export function areaSquareFeet(doc: SketchDoc): number {
   }
   const pixelArea = Math.abs(twiceArea) / 2;
   return pixelArea / (pxPerFoot * pxPerFoot);
+}
+
+/**
+ * Area of the doc's FIRST shape (legacy mirror) — see {@link segments}
+ * for why the doc-level signature survives.
+ */
+export function areaSquareFeet(doc: SketchDoc): number {
+  return shapeAreaSquareFeet(
+    { vertices: doc.vertices, closed: doc.closed },
+    doc.pxPerFoot,
+  );
+}
+
+/**
+ * Centroid of a polygon's vertices (canvas px) — where the editor
+ * anchors a closed shape's on-canvas area caption (#686), so "House
+ * 1,240 sq ft" sits INSIDE the house, not at some corner. Uses the
+ * standard area-weighted polygon centroid; for a degenerate polygon
+ * (near-zero area — collinear points, a 2-vertex "shape") it falls back
+ * to the plain vertex mean, which is still a sensible label anchor.
+ * Returns null only when there are no vertices at all.
+ */
+export function shapeCentroid(vertices: SketchVertex[]): SketchVertex | null {
+  const n = vertices.length;
+  if (n === 0) return null;
+  let twiceArea = 0;
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < n; i++) {
+    const a = vertices[i];
+    const b = vertices[(i + 1) % n];
+    const cross = a.x * b.y - b.x * a.y;
+    twiceArea += cross;
+    cx += (a.x + b.x) * cross;
+    cy += (a.y + b.y) * cross;
+  }
+  if (Math.abs(twiceArea) <= GEOM_EPS) {
+    let sx = 0;
+    let sy = 0;
+    for (const p of vertices) {
+      sx += p.x;
+      sy += p.y;
+    }
+    return { x: sx / n, y: sy / n };
+  }
+  return { x: cx / (3 * twiceArea), y: cy / (3 * twiceArea) };
 }
 
 /**
@@ -207,31 +362,46 @@ export function endpointOffset(
   return { dx: ux * px, dy: uy * px };
 }
 
-/** An empty document calibrated at `pxPerFoot`. */
+/** An empty document (one empty open shape) calibrated at `pxPerFoot`. */
 export function emptyDoc(pxPerFoot: number): SketchDoc {
-  return { version: 1, pxPerFoot, vertices: [], labels: [], closed: false };
+  return docFromShapes(pxPerFoot, [], []);
 }
 
 /**
  * Rescale a document's pixel space by `factor` about the origin (0,0):
- * every vertex and label coordinate is multiplied by `factor`, and so is
- * `pxPerFoot`. Because both the pixel geometry AND the calibration scale
- * together, every real-world measurement (segment feet, perimeter, area)
- * is INVARIANT — this is how the editor recalibrates when the user
- * changes grid density or drawing scale after drawing: a 20 ft wall
- * stays a 20 ft wall.
+ * every vertex and label coordinate — across EVERY shape (#686) — is
+ * multiplied by `factor`, and so is `pxPerFoot`. Because both the pixel
+ * geometry AND the calibration scale together, every real-world
+ * measurement (segment feet, perimeter, area) is INVARIANT — this is
+ * how the editor recalibrates when the user changes grid density or
+ * drawing scale after drawing: a 20 ft wall stays a 20 ft wall, in the
+ * garage as much as in the house.
  *
  * A non-finite, non-positive, or identity factor returns the document
  * unchanged (same reference) so callers can apply it unconditionally.
+ * A legacy doc (no `shapes` key) stays legacy — rescaling never
+ * invents the key, so shape identity is preserved for callers that
+ * compare before/after.
  */
 export function rescaleDoc(doc: SketchDoc, factor: number): SketchDoc {
   if (!Number.isFinite(factor) || factor <= 0 || factor === 1) return doc;
-  return {
+  const scaleV = (p: SketchVertex): SketchVertex => ({
+    x: p.x * factor,
+    y: p.y * factor,
+  });
+  const out: SketchDoc = {
     ...doc,
     pxPerFoot: doc.pxPerFoot * factor,
-    vertices: doc.vertices.map((p) => ({ x: p.x * factor, y: p.y * factor })),
+    vertices: doc.vertices.map(scaleV),
     labels: doc.labels.map((l) => ({ ...l, x: l.x * factor, y: l.y * factor })),
   };
+  if (doc.shapes) {
+    out.shapes = doc.shapes.map((s) => ({
+      closed: s.closed,
+      vertices: s.vertices.map(scaleV),
+    }));
+  }
+  return out;
 }
 
 /** Tolerance for the orientation / bounding-box predicates below. */
@@ -290,7 +460,10 @@ function segmentsIntersect(
  * closing edge last→first) intersects itself. A self-intersecting
  * outline makes the shoelace area silently wrong (a bowtie "encloses"
  * far less than the formula reports), so the editor uses this to warn
- * instead of showing a bogus square-footage.
+ * instead of showing a bogus square-footage. Applies PER SHAPE (#686):
+ * pass one shape's vertices at a time — two different shapes may
+ * legitimately overlap (a deck tucked against the house), so cross-shape
+ * intersection is deliberately not a defect.
  *
  * O(n²) over all NON-ADJACENT edge pairs — edges that share a vertex
  * (consecutive edges, and the closing edge with the first/last edge)

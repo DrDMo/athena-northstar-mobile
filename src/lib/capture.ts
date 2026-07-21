@@ -54,7 +54,10 @@ export type SketchMeta = {
    * dimensions/area are recomputable from data alone (not the PNG).
    * Additive + optional: older sketches (raster-only) and every
    * non-sketch capture omit it, so the persisted queue + sync wire only
-   * ever GAIN this key.
+   * ever GAIN this key. Since #686 the doc may also carry `shapes`
+   * (multiple outlines) — another gained-only key, with the legacy
+   * top-level vertices/closed always mirroring `shapes[0]` so pre-#686
+   * readers keep seeing the first outline unchanged.
    */
   vector?: SketchDoc;
 };

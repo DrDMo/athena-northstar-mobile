@@ -1,5 +1,6 @@
 /**
- * Unit tests for the pure vector floor-plan geometry (#666, SLICE 1).
+ * Unit tests for the pure vector floor-plan geometry (#666, SLICE 1;
+ * multi-shape #686).
  *
  * Framework: Node's BUILT-IN test runner (`node:test` + `node:assert`),
  * chosen because the repo ships no jest/vitest and adding one would pull
@@ -27,6 +28,8 @@ import { test } from 'node:test';
 import {
   areaSquareFeet,
   type Dir8,
+  docFromShapes,
+  docShapes,
   emptyDoc,
   endpointOffset,
   hasSelfIntersection,
@@ -35,7 +38,12 @@ import {
   rescaleDoc,
   segmentLengthFeet,
   segments,
+  shapeAreaSquareFeet,
+  shapeCentroid,
+  shapePerimeterFeet,
+  shapeSegments,
   type SketchDoc,
+  type SketchShape,
   type SketchVertex,
 } from './sketch-model.ts';
 
@@ -369,7 +377,7 @@ test('hasSelfIntersection: degenerate inputs are safe', () => {
   );
 });
 
-test('emptyDoc: calibrated, empty, open', () => {
+test('emptyDoc: calibrated, empty, open — with the shapes mirror in place', () => {
   const doc = emptyDoc(12);
   assert.deepEqual(doc, {
     version: 1,
@@ -377,8 +385,336 @@ test('emptyDoc: calibrated, empty, open', () => {
     vertices: [],
     labels: [],
     closed: false,
+    shapes: [{ vertices: [], closed: false }],
   });
   assert.equal(areaSquareFeet(doc), 0);
   assert.equal(perimeterFeet(doc), 0);
   assert.equal(segments(doc).length, 0);
+});
+
+// --- Multi-shape (#686) ---
+
+test('docShapes: a legacy doc (no shapes key) loads as ONE shape', () => {
+  // A doc saved before #686 shipped: top-level vertices/closed only.
+  const legacy: SketchDoc = {
+    version: 1,
+    pxPerFoot: 24,
+    vertices: [
+      { x: 0, y: 0 },
+      { x: 480, y: 0 },
+      { x: 480, y: 360 },
+      { x: 0, y: 360 },
+    ],
+    labels: [],
+    closed: true,
+  };
+  const shapes = docShapes(legacy);
+  assert.equal(shapes.length, 1);
+  // Same arrays, not copies — the legacy fields ARE the single shape.
+  assert.equal(shapes[0].vertices, legacy.vertices);
+  assert.equal(shapes[0].closed, true);
+  // Its measurements are the doc-level ones.
+  assert.ok(
+    Math.abs(shapeAreaSquareFeet(shapes[0], 24) - areaSquareFeet(legacy)) <
+      APPROX,
+  );
+});
+
+test('docShapes: a modern doc returns its shapes; empty shapes falls back to legacy', () => {
+  const house: SketchShape = {
+    vertices: [
+      { x: 0, y: 0 },
+      { x: 480, y: 0 },
+      { x: 480, y: 360 },
+      { x: 0, y: 360 },
+    ],
+    closed: true,
+  };
+  const garage: SketchShape = {
+    vertices: [
+      { x: 600, y: 0 },
+      { x: 840, y: 0 },
+      { x: 840, y: 240 },
+      { x: 600, y: 240 },
+    ],
+    closed: true,
+  };
+  const doc = docFromShapes(24, [house, garage], []);
+  assert.equal(docShapes(doc), doc.shapes);
+  assert.equal(docShapes(doc).length, 2);
+  // `shapes: []` is a writer bug, not worth throwing over: fall back to
+  // the legacy mirror as the single shape.
+  const buggy: SketchDoc = {
+    version: 1,
+    pxPerFoot: 24,
+    vertices: [{ x: 1, y: 2 }],
+    labels: [],
+    closed: false,
+    shapes: [],
+  };
+  const fallback = docShapes(buggy);
+  assert.equal(fallback.length, 1);
+  assert.equal(fallback[0].vertices, buggy.vertices);
+});
+
+test('docFromShapes: legacy vertices/closed ALWAYS mirror shapes[0] on serialize', () => {
+  const first: SketchShape = {
+    vertices: [
+      { x: 0, y: 0 },
+      { x: 120, y: 0 },
+      { x: 120, y: 120 },
+    ],
+    closed: true,
+  };
+  const second: SketchShape = {
+    vertices: [
+      { x: 200, y: 0 },
+      { x: 260, y: 0 },
+    ],
+    closed: false,
+  };
+  const doc = docFromShapes(12, [first, second], [
+    { x: 60, y: 60, text: 'House' },
+  ]);
+  // The mirror invariant — a pre-#686 reader sees the first outline.
+  assert.equal(doc.vertices, first.vertices);
+  assert.equal(doc.closed, first.closed);
+  assert.equal(doc.shapes?.length, 2);
+  assert.equal(doc.shapes?.[1], second);
+  assert.equal(doc.labels.length, 1);
+  // An empty shape list normalizes to one empty open shape so the
+  // mirror always has a shapes[0] to point at.
+  const blank = docFromShapes(12, [], []);
+  assert.deepEqual(blank.shapes, [{ vertices: [], closed: false }]);
+  assert.deepEqual(blank.vertices, []);
+  assert.equal(blank.closed, false);
+});
+
+test('shape-level geometry matches the doc-level legacy delegates', () => {
+  const verts: SketchVertex[] = [
+    { x: 0, y: 0 },
+    { x: 120, y: 0 },
+    { x: 120, y: 120 },
+    { x: 0, y: 120 },
+  ];
+  const doc = closedDoc(12, verts);
+  const shape: SketchShape = { vertices: verts, closed: true };
+  assert.deepEqual(shapeSegments(shape, 12), segments(doc));
+  assert.equal(shapePerimeterFeet(shape, 12), perimeterFeet(doc));
+  assert.equal(shapeAreaSquareFeet(shape, 12), areaSquareFeet(doc));
+});
+
+test('multi-shape: area of the SECOND shape (the garage) measures independently', () => {
+  // 24 px/ft. House 20x15 ft = 300 sq ft; garage 10x10 ft = 100 sq ft.
+  const house: SketchShape = {
+    vertices: [
+      { x: 0, y: 0 },
+      { x: 480, y: 0 },
+      { x: 480, y: 360 },
+      { x: 0, y: 360 },
+    ],
+    closed: true,
+  };
+  const garage: SketchShape = {
+    vertices: [
+      { x: 600, y: 0 },
+      { x: 840, y: 0 },
+      { x: 840, y: 240 },
+      { x: 600, y: 240 },
+    ],
+    closed: true,
+  };
+  const doc = docFromShapes(24, [house, garage], []);
+  const shapes = docShapes(doc);
+  assert.ok(Math.abs(shapeAreaSquareFeet(shapes[0], doc.pxPerFoot) - 300) < APPROX);
+  assert.ok(Math.abs(shapeAreaSquareFeet(shapes[1], doc.pxPerFoot) - 100) < APPROX);
+  assert.ok(Math.abs(shapePerimeterFeet(shapes[1], doc.pxPerFoot) - 40) < APPROX);
+  // The doc-level (legacy-mirror) area still reads shape[0] only — a
+  // pre-#686 reader sees the house, never a house+garage sum.
+  assert.ok(Math.abs(areaSquareFeet(doc) - 300) < APPROX);
+});
+
+test('multi-shape: an OPEN second shape has no area but a traced path length', () => {
+  const house: SketchShape = {
+    vertices: [
+      { x: 0, y: 0 },
+      { x: 240, y: 0 },
+      { x: 240, y: 240 },
+      { x: 0, y: 240 },
+    ],
+    closed: true,
+  };
+  // Deck being traced: two 10 ft walls at 24 px/ft, not yet closed.
+  const deck: SketchShape = {
+    vertices: [
+      { x: 300, y: 0 },
+      { x: 540, y: 0 },
+      { x: 540, y: 240 },
+    ],
+    closed: false,
+  };
+  const doc = docFromShapes(24, [house, deck], []);
+  const shapes = docShapes(doc);
+  assert.equal(shapeAreaSquareFeet(shapes[1], doc.pxPerFoot), 0);
+  assert.ok(Math.abs(shapePerimeterFeet(shapes[1], doc.pxPerFoot) - 20) < APPROX);
+});
+
+test('rescaleDoc: transforms EVERY shape, keeping each shape\'s feet invariant', () => {
+  // Same 24 px grid, scale flips 1 ft → 5 ft per square: factor 0.2.
+  const oldPpf = pxPerFootFromGrid(24, 1);
+  const newPpf = pxPerFootFromGrid(24, 5);
+  const house: SketchShape = {
+    vertices: [
+      { x: 0, y: 0 },
+      { x: 480, y: 0 },
+      { x: 480, y: 360 },
+      { x: 0, y: 360 },
+    ],
+    closed: true,
+  };
+  const garage: SketchShape = {
+    vertices: [
+      { x: 600, y: 0 },
+      { x: 840, y: 0 },
+      { x: 840, y: 240 },
+      { x: 600, y: 240 },
+    ],
+    closed: true,
+  };
+  const doc = docFromShapes(oldPpf, [house, garage], [
+    { x: 240, y: 180, text: 'House' },
+  ]);
+  const out = rescaleDoc(doc, newPpf / oldPpf);
+  assert.ok(Math.abs(out.pxPerFoot - newPpf) < APPROX);
+  // Both shapes' pixel geometry scaled about the origin…
+  assert.ok(Math.abs((out.shapes?.[0].vertices[1].x ?? NaN) - 96) < APPROX);
+  assert.ok(Math.abs((out.shapes?.[1].vertices[0].x ?? NaN) - 120) < APPROX);
+  // …and the legacy mirror scaled with them (same values as shapes[0]).
+  assert.deepEqual(out.vertices, out.shapes?.[0].vertices);
+  assert.equal(out.closed, out.shapes?.[0].closed);
+  // Real measurements are invariant PER SHAPE: 300 + 100 sq ft.
+  const shapes = docShapes(out);
+  assert.ok(Math.abs(shapeAreaSquareFeet(shapes[0], out.pxPerFoot) - 300) < APPROX);
+  assert.ok(Math.abs(shapeAreaSquareFeet(shapes[1], out.pxPerFoot) - 100) < APPROX);
+  assert.ok(Math.abs(shapePerimeterFeet(shapes[1], out.pxPerFoot) - 40) < APPROX);
+});
+
+test('rescaleDoc: a legacy doc (no shapes key) stays legacy after rescale', () => {
+  const doc = closedDoc(24, [
+    { x: 0, y: 0 },
+    { x: 480, y: 0 },
+    { x: 480, y: 360 },
+  ]);
+  assert.equal(doc.shapes, undefined);
+  const out = rescaleDoc(doc, 0.5);
+  // Rescale never invents the key — additive evolution is the writer's
+  // (docFromShapes') job, not a side effect of recalibration.
+  assert.equal(out.shapes, undefined);
+  // But docShapes still normalizes it to one shape with scaled geometry.
+  const shapes = docShapes(out);
+  assert.equal(shapes.length, 1);
+  assert.ok(Math.abs(shapes[0].vertices[1].x - 240) < APPROX);
+});
+
+test('hasSelfIntersection: judged PER SHAPE — a bowtie garage does not taint the house', () => {
+  const house: SketchShape = {
+    vertices: [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 100 },
+      { x: 0, y: 100 },
+    ],
+    closed: true,
+  };
+  const bowtieGarage: SketchShape = {
+    vertices: [
+      { x: 200, y: 0 },
+      { x: 300, y: 100 },
+      { x: 300, y: 0 },
+      { x: 200, y: 100 },
+    ],
+    closed: true,
+  };
+  const doc = docFromShapes(10, [house, bowtieGarage], []);
+  const shapes = docShapes(doc);
+  assert.equal(hasSelfIntersection(shapes[0].vertices, shapes[0].closed), false);
+  assert.equal(hasSelfIntersection(shapes[1].vertices, shapes[1].closed), true);
+  // Two shapes that OVERLAP each other are fine — a deck tucked against
+  // the house is normal, so cross-shape intersection is not a defect
+  // (each shape is judged alone).
+  const overlappingDeck: SketchShape = {
+    vertices: [
+      { x: 50, y: 50 },
+      { x: 150, y: 50 },
+      { x: 150, y: 150 },
+      { x: 50, y: 150 },
+    ],
+    closed: true,
+  };
+  assert.equal(
+    hasSelfIntersection(overlappingDeck.vertices, overlappingDeck.closed),
+    false,
+  );
+});
+
+test('shapeCentroid: rectangle centroid lands at its center', () => {
+  const c = shapeCentroid([
+    { x: 0, y: 0 },
+    { x: 480, y: 0 },
+    { x: 480, y: 360 },
+    { x: 0, y: 360 },
+  ]);
+  assert.ok(c != null);
+  assert.ok(Math.abs(c.x - 240) < APPROX);
+  assert.ok(Math.abs(c.y - 180) < APPROX);
+  // Winding order doesn't move it.
+  const cc = shapeCentroid([
+    { x: 0, y: 0 },
+    { x: 0, y: 360 },
+    { x: 480, y: 360 },
+    { x: 480, y: 0 },
+  ]);
+  assert.ok(cc != null);
+  assert.ok(Math.abs(cc.x - 240) < APPROX);
+  assert.ok(Math.abs(cc.y - 180) < APPROX);
+});
+
+test('shapeCentroid: L-shape centroid is area-weighted, not the vertex mean', () => {
+  // An L: 2x2 square with a 1x1 notch removed from the top-right.
+  // Area = 3; centroid = (sum of sub-rect centroids weighted by area):
+  // bottom 2x1 at (1, 1.5) area 2; top-left 1x1 at (0.5, 0.5) area 1
+  // → ((2*1 + 1*0.5)/3, (2*1.5 + 1*0.5)/3) = (5/6, 7/6).
+  const c = shapeCentroid([
+    { x: 0, y: 0 },
+    { x: 1, y: 0 },
+    { x: 1, y: 1 },
+    { x: 2, y: 1 },
+    { x: 2, y: 2 },
+    { x: 0, y: 2 },
+  ]);
+  assert.ok(c != null);
+  assert.ok(Math.abs(c.x - 5 / 6) < APPROX);
+  assert.ok(Math.abs(c.y - 7 / 6) < APPROX);
+});
+
+test('shapeCentroid: degenerate inputs fall back safely', () => {
+  assert.equal(shapeCentroid([]), null);
+  // One point → that point; two points → the midpoint (vertex mean).
+  assert.deepEqual(shapeCentroid([{ x: 3, y: 4 }]), { x: 3, y: 4 });
+  assert.deepEqual(
+    shapeCentroid([
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+    ]),
+    { x: 5, y: 0 },
+  );
+  // Collinear (zero-area) polygon → vertex mean, not NaN.
+  const c = shapeCentroid([
+    { x: 0, y: 0 },
+    { x: 5, y: 5 },
+    { x: 10, y: 10 },
+  ]);
+  assert.ok(c != null);
+  assert.ok(Math.abs(c.x - 5) < APPROX);
+  assert.ok(Math.abs(c.y - 5) < APPROX);
 });
