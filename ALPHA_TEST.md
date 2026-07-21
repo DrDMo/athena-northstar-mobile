@@ -89,7 +89,7 @@ to find what breaks before customers do.
 ## Found a bug?
 
 File it here:
-[github.com/DrDMo/athena-northstar-mobile/issues/new/choose](https://github.com/DrDMo/athena-northstar-mobile/issues/new/choose)
+[github.com/DrDMo/athena-northstar-mobile-appraisal/issues/new/choose](https://github.com/DrDMo/athena-northstar-mobile-appraisal/issues/new/choose)
 
 Pick "Alpha bug report" and fill in what you can. A rough note beats
 no note. Screenshots help a lot.

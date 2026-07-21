@@ -11,7 +11,7 @@ This walks you (Darin) through getting a real APK / IPA you can install on a pho
    ```
 3. **Log in** from this repo:
    ```bash
-   cd "c:/Users/darin/Documents/_Athena Decision System/athena-northstar-mobile"
+   cd "c:/Users/darin/Documents/_Athena Decision System/athena-northstar-mobile-appraisal"
    eas login
    ```
 4. **Initialize the EAS project** (first time only — creates the project under `athena-systems` and writes the project id into `app.json` → `expo.extra.eas.projectId`):
